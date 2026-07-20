@@ -1,24 +1,48 @@
-# alchemy-template
+# alchemy-mastering
 
-The recommended starting point for your own [Hermetic Modular Alchemy
-Lab](https://hermeticmodular.com/modules/alchemy-lab) module firmware.
+A stereo-linked mastering-chain firmware for the [Hermetic Modular Alchemy
+Lab](https://hermeticmodular.com/modules/alchemy-lab) module, built on the
+[Alchemy SDK](https://github.com/hermetic-modular/alchemy-sdk).
 
-This is the [Alchemy SDK](https://github.com/hermetic-modular/alchemy-sdk)'s
-`stereo_eq` example — a dual mono three-band EQ that opts into the full
-framework stack (pagination, pot catch, param lock, CV routing, presets,
-settings, LED animations) — packaged as a standalone project that vendors
-the Alchemy SDK and libDaisy as git submodules and builds with the standard
-Daisy `make` workflow.  Clone it, build it, flash it, then gut `src/` and
-make it yours.
+Signal path: In → 3-band EQ → Compressor → Saturation → Limiter → Output
+Trim → Dither → Out, stereo-linked throughout (one set of controls; the
+compressor and limiter detect `max(|L|,|R|)` so the two channels never
+drift apart). Three pages of six knobs each:
+
+- **Page 1 — EQ (amber).** Low shelf, mid peak, and high shelf, each with
+  freq/gain; the mid band's Q cycles between three widths.
+- **Page 2 — Compressor (blue).** Threshold, ratio, attack, release,
+  makeup gain, and dry/wet mix, with a hard/soft knee toggle.
+- **Page 3 — Output (red).** Saturation drive and asymmetry feed a
+  brickwall limiter (ceiling, release), followed by output trim and TPDF
+  dither depth (0–2 LSB at 24-bit, matching the codec's native word
+  length).
+
+Controls: **B1** tap cycles pages. **B2** tap toggles bypass for the
+current page's stage (EQ / compressor / saturation). **B3** tap cycles the
+current page's mode (EQ: mid-Q 0.707 / 1.5 / 4.0; compressor: hard/soft
+knee; output: saturation cubic-soft / hard clip). **B2+B3** held for 2 s
+enters the SDK's settings mode, same as the template. Presets and settings
+are kept from the template; **param lock and CV routing have been
+removed** — every knob is a direct, unlatched control.
+
+The project packages the Alchemy SDK and libDaisy as git submodules and
+builds with the standard Daisy `make` workflow.
 
 ## What's inside
 
 ```
-├── Makefile             standard Daisy Makefile (libDaisy core underneath)
-├── src/                 the firmware — this is the part you edit
-│   ├── stereo_eq.cpp        hardware wiring, pages, knobs, CV, presets
-│   ├── stereo_eq_dsp.*      pure DSP (three-band biquad EQ per channel)
-│   └── stereo_eq_palette.h  LED color palettes
+├── Makefile              standard Daisy Makefile (libDaisy core underneath)
+├── src/                  the firmware — this is the part you edit
+│   ├── mastering.cpp         hardware wiring, pages, knobs, buttons, LEDs, presets
+│   ├── mastering_dsp.*       chain orchestration + audio callback
+│   ├── dsp_common.h          shared constants and helpers
+│   ├── dsp_biquad.h          RBJ biquad (low shelf / peak / high shelf)
+│   ├── dsp_compressor.h      log-domain bus compressor
+│   ├── dsp_limiter.h         brickwall limiter (instant attack, exponential release)
+│   ├── dsp_saturation.h      waveshaper + DC blocker
+│   ├── dsp_dither.h          xorshift32 TPDF dither
+│   └── mastering_palette.h   LED color palettes
 └── lib/
     ├── alchemy-sdk/     Alchemy framework + board support   (submodule)
     └── libDaisy/        Electrosmith Daisy library           (submodule)
@@ -51,7 +75,7 @@ git clone --recurse-submodules https://github.com/hermetic-modular/alchemy-templ
 cd my-module
 
 make libdaisy    # build libDaisy once after cloning
-make             # build the firmware → build/stereo_eq.bin
+make             # build the firmware → build/mastering.bin
 ```
 
 ## Flashing
@@ -72,9 +96,10 @@ You can also use the [Hermetic Modular Web Programmer](https://hermeticmodular.c
 1. **Rename the firmware** — change `TARGET` at the top of the
    [`Makefile`](Makefile) (this names the `.bin`), and rename the `src/`
    files to taste, updating `CPP_SOURCES` to match.
-2. **Bring your own DSP** — replace `stereo_eq_dsp.*` and rewire the knobs,
-   pages, and CV matrix in `stereo_eq.cpp`.  Every framework feature is an
-   explicit constructor call; delete what you don't want.
+2. **Bring your own DSP** — replace the `dsp_*.h` stages and
+   `mastering_dsp.*`, and rewire the knobs and pages in `mastering.cpp`.
+   Every framework feature is an explicit constructor call; delete what you
+   don't want.
 3. **Add source files** — append them to `CPP_SOURCES` in the Makefile.
    One caveat from the underlying Daisy build: object files are flattened
    into `build/` by basename, so two sources can't share a filename even in
@@ -83,7 +108,7 @@ You can also use the [Hermetic Modular Web Programmer](https://hermeticmodular.c
    `lib/alchemy-sdk/framework/include/alchemy/`, and the SDK's
    [`examples/`](https://github.com/hermetic-modular/alchemy-sdk/tree/main/examples)
    show other usage styles (the `kick` example is a minimal-opt-in
-   contrast to this template).
+   contrast to this project).
 
 ### Updating the vendored libraries
 
