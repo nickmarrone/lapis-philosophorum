@@ -29,6 +29,16 @@ removed** — every knob is a direct, unlatched control.
 The project packages the Alchemy SDK and libDaisy as git submodules and
 builds with the standard Daisy `make` workflow.
 
+## Documentation
+
+- **[User Guide](docs/USER_GUIDE.md)** — how to play the module: the
+  signal path, every knob's range and curve, what the LEDs mean, presets,
+  settings mode, and gain-staging notes.
+- **[Developer Guide](docs/DEVELOPER_GUIDE.md)** — how the firmware is
+  built: the control/DSP split, each stage's implementation, the preset
+  schema, the build system, recipes for extending it, and the invariants
+  that will bite quietly if broken.
+
 ## What's inside
 
 ```
@@ -71,12 +81,15 @@ brew install --cask gcc-arm-embedded
 ## Getting started
 
 ```sh
-git clone --recurse-submodules https://github.com/hermetic-modular/alchemy-template.git my-module
-cd my-module
+git clone --recurse-submodules <this-repo> alchemy-mastering
+cd alchemy-mastering
 
 make libdaisy    # build libDaisy once after cloning
 make             # build the firmware → build/mastering.bin
 ```
+
+`BOARD=v2` is the default; pass `make BOARD=v1` for an original dev board.
+Switching boards wipes the object tree automatically.
 
 ## Flashing
 
@@ -93,13 +106,17 @@ You can also use the [Hermetic Modular Web Programmer](https://hermeticmodular.c
 
 ## Make it yours
 
-1. **Rename the firmware** — change `TARGET` at the top of the
+The [Developer Guide](docs/DEVELOPER_GUIDE.md) covers the architecture and
+has step-by-step recipes for adding a knob, adding a DSP stage, adding a
+page, and extending the preset payload. The short version:
+
+1. **The control/DSP seam** is the three parameter structs in
+   [`src/mastering_dsp.h`](src/mastering_dsp.h). The DSP layer knows
+   nothing about the SDK; the control layer pushes engineering units
+   (Hz, dB, ms) into it once per frame.
+2. **Rename the firmware** — change `TARGET` at the top of the
    [`Makefile`](Makefile) (this names the `.bin`), and rename the `src/`
    files to taste, updating `CPP_SOURCES` to match.
-2. **Bring your own DSP** — replace the `dsp_*.h` stages and
-   `mastering_dsp.*`, and rewire the knobs and pages in `mastering.cpp`.
-   Every framework feature is an explicit constructor call; delete what you
-   don't want.
 3. **Add source files** — append them to `CPP_SOURCES` in the Makefile.
    One caveat from the underlying Daisy build: object files are flattened
    into `build/` by basename, so two sources can't share a filename even in
