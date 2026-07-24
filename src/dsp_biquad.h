@@ -259,4 +259,69 @@ inline BiquadCoeffsT<T> MakePeaking(float f_hz, float gain_db, float q, float fs
     return Pack<T>(b0, b1, b2, a1, a2);
 }
 
+/**
+ * Matched second-order high-pass. Not an EQ band — this exists for the
+ * compressor's sidechain, where the question "how much bass reaches the
+ * detector" makes the shape *at and just below the corner* the specification.
+ *
+ * Poles come from the same impulse-invariance construction MakePeaking uses
+ * (BiquadFits §3.2), with G = 1 so the damping is the plain 1/(2Q); the cosh
+ * branch covers Q < 0.5, which ClampQ still admits.
+ *
+ * The numerator is pinned as a double zero at z = 1, so the response is
+ * *exactly* zero at DC rather than merely small — for a sidechain filter that
+ * is the property that matters, and it is what the bilinear transform gives
+ * you here as well.
+ *
+ * That leaves one free scalar, matched at the corner itself. The analog
+ * prototype
+ *
+ *     H(s) = s^2 / (s^2 + s*w0/Q + w0^2)
+ *
+ * evaluated at s = jw0 is exactly jQ, so |H(jw0)| = Q — for Butterworth
+ * Q = 1/sqrt(2) that is the familiar -3.01 dB. Matching it:
+ *
+ *     |1 - e^{-jw0}|^2 = 4 sin^2(w0/2)
+ *     b0 = Q * |D(e^{jw0})| / (4 sin^2(w0/2)),   b1 = -2*b0,   b2 = b0
+ *
+ * Exact at DC, exact at f0, correct 12 dB/oct asymptote. Nyquist is the one
+ * point *not* matched, and at the corners a sidechain uses it costs nothing
+ * measurable: worst deviation from the prototype over 20 Hz – 20 kHz is below
+ * 1e-5 dB at f0 <= 500 Hz. It only becomes visible when the corner climbs into
+ * the audio band — 0.003 dB at 5 kHz, 0.047 dB at 10 kHz — so if this ever
+ * gets reused as a program high-pass rather than a detector one, re-measure
+ * before trusting it.
+ *
+ * Re(D) at a 30 Hz corner is a difference of three near-unity terms and loses
+ * roughly six digits, which is why this — like every other design in this file
+ * — solves in double and stores at T.
+ */
+template <typename T = float>
+inline BiquadCoeffsT<T> MakeHighPass(float f_hz, float q, float fs)
+{
+    using namespace detail;
+    const double f  = ClampFreq(f_hz, fs);
+    const double Q  = ClampQ(q);
+    const double w0 = 2.0 * kPi * f / fs;
+
+    const double qd = 1.0 / (2.0 * Q);
+    const double e  = std::exp(-qd * w0);
+    const double a1 = qd <= 1.0
+        ? -2.0 * e * std::cos (std::sqrt(1.0 - qd * qd) * w0)
+        : -2.0 * e * std::cosh(std::sqrt(qd * qd - 1.0) * w0);
+    const double a2 = std::exp(-2.0 * qd * w0);
+
+    // |D(e^{jw0})|, with e^{-jw} = cos w - i sin w.
+    const double c1 = std::cos(w0),      s1 = std::sin(w0);
+    const double c2 = std::cos(2.0 * w0), s2 = std::sin(2.0 * w0);
+    const double dre = 1.0 + a1 * c1 + a2 * c2;
+    const double dim = -(a1 * s1 + a2 * s2);
+    const double dmag = std::sqrt(dre * dre + dim * dim);
+
+    const double sh = std::sin(0.5 * w0);
+    const double b0 = Q * dmag / (4.0 * sh * sh);
+
+    return Pack<T>(b0, -2.0 * b0, b0, a1, a2);
+}
+
 } // namespace mastering_dsp

@@ -98,6 +98,20 @@ inline cplx ProtoLowShelf(double f, double fc, double gain_lin)
     return gain_lin * ProtoHighShelf(f, fc, 1.0 / gain_lin);
 }
 
+/**
+ * Second-order high-pass, the prototype MakeHighPass approximates:
+ *   H(s) = s^2 / (s^2 + s*w0/Q + w0^2)
+ * Exactly zero at DC, unity at HF, and |H(jw0)| = Q at the corner — which is
+ * the point the digital design matches. Used by the compressor harness for the
+ * sidechain filter; it lives here because this is where the prototypes live.
+ */
+inline cplx ProtoHighPass(double f, double f0, double q)
+{
+    const double w0 = 2.0 * kPi * f0;
+    const cplx   s  = cplx(0.0, 2.0 * kPi * f);
+    return (s * s) / (s * s + s * (w0 / q) + w0 * w0);
+}
+
 /* ── Band description, so tests can drive all three uniformly ─────────── */
 
 enum class Band { LowShelf, Peaking, HighShelf };
