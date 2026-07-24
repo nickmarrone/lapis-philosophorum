@@ -303,10 +303,46 @@ static void RenderButtons(uint32_t t_ms)
     /* B1 is left to Pager — it paints the active-page indicator itself. */
 }
 
+/**
+ * Flush denormals to zero in the FPU.
+ *
+ * Two writes, and the second one is the one that matters. On exception entry
+ * the hardware initializes the handler's FPSCR from FPU->FPDSCR, so setting
+ * FPSCR here in thread mode would NOT apply inside the SAI interrupt — which
+ * is the only place audio is processed. FPDSCR covers the ISR; the FPSCR write
+ * covers thread mode, where the coefficient design runs.
+ *
+ * Nothing else in this firmware, the SDK, or libDaisy ever touches FPSCR — and
+ * this is a BOOT_SRAM build, where Reset_Handler skips SystemInit() entirely,
+ * so no startup path has written it either.
+ *
+ * Safe for audio: a denormal in an IIR decay tail is ~200 dB below audibility,
+ * so truncating it at ~1e-38 instead of ~1e-45 changes nothing anyone can hear.
+ * Safe for the design math too — its smallest intermediate is fc^4 ~ 5e-13,
+ * computed in double, where the normal range reaches 2e-308.
+ */
+static void EnableFlushToZero()
+{
+    constexpr uint32_t kFz = 1u << 24;      // FPSCR.FZ
+    FPU->FPDSCR |= kFz;                     // every exception handler, incl. SAI
+    __set_FPSCR(__get_FPSCR() | kFz);       // thread mode
+}
+
 int main()
 {
+    EnableFlushToZero();
+
     hw.Init();
     mastering_dsp::Init(hw.SampleRate());
+
+    /* The pots ship with slew = 0, which SetCoeff clamps to a pass-through, so
+     * raw ADC jitter reaches the biquad design every frame and zippers. Set the
+     * filter coefficient directly rather than a slew time: AnalogControl::Init
+     * was handed AudioCallbackRate() (2 kHz), but ProcessAllControls() actually
+     * runs from ControlLoop's 1 ms poll, so any slew_seconds would come out 2x
+     * wrong. 0.125 is tau ~= 8 ms at the real 1 kHz rate. */
+    for (uint8_t i = 0; i < kNumPots; i++)
+        hw.pots[i].SetCoeff(0.125f);
 
     pager.SetPageColor(0, kPageAmber);
     pager.SetPageColor(1, kPageBlue);

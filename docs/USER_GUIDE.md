@@ -61,8 +61,15 @@ moves until you deliberately move it.
 
 ## Page 1 — EQ (amber)
 
-A classic three-band mastering EQ: low shelf, peaking mid, high shelf.
-All three run as RBJ biquads, stereo-linked.
+A classic three-band mastering EQ: low shelf, peaking mid, high shelf,
+stereo-linked.
+
+The filters are magnitude-matched rather than the usual bilinear-transform
+designs, which matters most at the top of the high-shelf sweep. A digital
+shelf built the conventional way cannot actually reach its target gain near
+20 kHz — the curve gets squashed into Nyquist, which is where a lot of the
+"digital top end" reputation comes from. These track the intended analog
+curve to within 0.3 dB across the whole range, at no cost in latency.
 
 | Knob | Parameter | Range | Curve |
 |---|---|---|---|
@@ -298,7 +305,7 @@ survives reflashes.
 | Audio block size | 24 samples |
 | Converter word length | 24-bit |
 | Channels | Stereo, fully linked |
-| EQ | 3 bands, ±15 dB, RBJ biquads |
+| EQ | 3 bands, ±15 dB, magnitude-matched biquads, zero latency |
 | Compressor | Feed-forward, log-domain, 1:1–20:1, hard/soft knee, parallel mix |
 | Saturation | Cubic soft clip or hard clip, ±0.3 asymmetry, DC-blocked |
 | Limiter | Brickwall, instantaneous attack, no lookahead |

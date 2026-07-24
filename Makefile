@@ -57,3 +57,12 @@ endif
 .PHONY: libdaisy
 libdaisy:
 	$(MAKE) -C $(LIBDAISY_DIR)
+
+# ── Host-side DSP measurement harness (no cross-toolchain needed) ───────────
+.PHONY: test test-golden test-clean
+test:
+	$(MAKE) -C tests
+test-golden:
+	$(MAKE) -C tests golden
+test-clean:
+	$(MAKE) -C tests clean

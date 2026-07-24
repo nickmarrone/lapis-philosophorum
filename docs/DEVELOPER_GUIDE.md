@@ -52,16 +52,36 @@ Two properties fall out of this, and both are worth preserving:
 | Control frame | ~60 Hz (16 ms) | main loop | `ControlLoop::Tick` → `UpdateParams` |
 | Button poll | 1 ms | inner loop of `Tick` | `PollTaps` via `OnPoll` |
 
-`kEngineBlockSamples = 24` at 48 kHz means a 0.5 ms audio block — the
-setters are effectively lock-free by virtue of writing plain floats that
-the ISR reads. There is no double-buffering or parameter smoothing on the
-control→audio handoff. This is fine for the parameters here (a knob moving
-at 60 Hz across a ±15 dB range steps by fractions of a dB per frame) but
-it's a real constraint: **do not add a parameter whose per-frame step
-would produce an audible discontinuity** without adding smoothing for it.
-Biquad coefficient recomputation is the closest thing to a risk, and it's
-tolerable because Direct Form I keeps its state in terms of past inputs
-and outputs rather than internal filter state.
+`kEngineBlockSamples = 24` at 48 kHz means a 0.5 ms audio block. Most
+setters are lock-free by virtue of writing plain floats that the ISR
+reads. **The EQ is the exception** and is worth reading before you copy
+the pattern for anything else: it is double-buffered and smoothed, because
+plain float writes were not good enough for it.
+
+- **Handoff.** `SetEq` fills the bank slot the ISR is *not* reading, then
+  publishes it with one `std::atomic` index store. Without this, the ISR
+  can preempt a setter mid-write and process a block with a mixed-generation
+  coefficient set. Do **not** replace this with a seqlock — preemption here
+  is asymmetric (the ISR can interrupt the main loop, never the reverse), so
+  a reader that spins waiting for the writer deadlocks outright.
+- **Smoothing.** Parameters are eased in log2(Hz) / dB / log2(Q) at control
+  rate, and the published coefficients are eased again per block in
+  `Process()`. A dirty check inside `SetEq` then makes a stationary knob
+  produce a *bit-identical* coefficient set frame after frame — which is
+  what actually silences the zipper, and what `tests/eq_control_test.cpp`
+  asserts.
+
+The general constraint still stands for every other stage: **do not add a
+parameter whose per-frame step would produce an audible discontinuity**
+without adding smoothing for it.
+
+A note on why Direct Form I is still the right topology here, since the
+reasoning used to be stated less precisely: DF-I never protected against
+*tearing* — that is the double buffer's job now. What it does buy is
+continuity across a coefficient swap. DF-I's state is literally past inputs
+and outputs, so after a swap the output is still computed from real past
+samples. A transposed Direct Form II keeps internal partial sums scaled by
+the *old* coefficients, and swapping under those clicks.
 
 ---
 
@@ -73,7 +93,7 @@ src/
 ├── mastering_dsp.h        the seam: parameter structs + entry points
 ├── mastering_dsp.cpp      chain orchestration + audio callback
 ├── dsp_common.h           shared constexpr + inline helpers
-├── dsp_biquad.h           RBJ biquad (Direct Form I)
+├── dsp_biquad.h           matched-magnitude biquad (Direct Form I)
 ├── dsp_compressor.h       log-domain feed-forward compressor
 ├── dsp_saturation.h       waveshaper + DC blocker
 ├── dsp_limiter.h          brickwall limiter
@@ -156,13 +176,16 @@ mastering_dsp::SetEq({ ls_freq.Value(), ls_gain.Value(), ... });
 This is intentional and load-bearing. Because nothing is edge-triggered,
 a preset load "just works" — `Presets::Load` writes new stored values into
 the `Pager`, and the next frame pushes them to the DSP with no
-apply-callback needed anywhere. The cost is recomputing three biquads per
-frame (three `powf`, three `cosf`, three `sinf`, ~60 times a second), which
-is negligible on an H750 and buys a materially simpler control flow.
+apply-callback needed anywhere.
 
-If you ever do need dirty-checking, add it inside the setters, not at the
-call site — keeping `UpdateParams` unconditional is what preserves the
-preset property.
+`SetEq` now *does* dirty-check, and it does so exactly where this section
+always said to: **inside the setter, never at the call site.** It compares
+the smoothed parameters against what was last designed and returns early if
+nothing moved, which is what makes a stationary knob produce a bit-identical
+coefficient set (§1). `UpdateParams` itself is unchanged and must stay
+unconditional — that is what preserves the preset property. A preset load
+still just works: the stored values arrive, the comparison fails, the
+coefficients get rebuilt.
 
 ### 3.4 Tap detection, and why it's hand-rolled
 
@@ -314,11 +337,46 @@ across two `BiquadState` arrays.
 
 ### 4.2 The stages
 
-**Biquad** (`dsp_biquad.h`) — textbook RBJ cookbook, Direct Form I,
-coefficients pre-normalised by `1/a0` at construction. `MakeLowShelf` and
-`MakeHighShelf` are fixed at Q = 0.707 (the `0.7071068f` in the `alpha`
-term); `MakePeaking` takes Q as an argument, which is what the mid-band
-Q cycling drives.
+**Biquad** (`dsp_biquad.h`) — Direct Form I, **magnitude-matched**
+coefficient design, templated on working precision.
+
+This is deliberately *not* the RBJ cookbook any more. RBJ uses the bilinear
+transform, which forces the response slope to zero at Nyquist, so a high
+shelf parked at 20 kHz with fs = 48 kHz cannot reach its target gain and the
+curve around it is squashed. Measured against the analog prototype that was
+**3.95 dB** of error at 16.5 kHz. The matched designs bring it to **0.28 dB**
+at identical runtime cost — only the control-rate math changed.
+
+- Shelves: Vicanek, *Matched Two-Pole Digital Shelving Filters* —
+  <https://vicanek.de/articles/2poleShelvingFits.pdf>
+- Peaking: Vicanek, *Matched Second Order Digital Filters* §3.2, §4.4 —
+  <https://vicanek.de/articles/BiquadFits.pdf>
+
+Two things to know before editing these:
+
+1. **The gain convention is not RBJ's.** Vicanek's `G` is the full linear
+   gain `10^(dB/20)`; RBJ's `A` is its square root, `10^(dB/40)`. Mixing
+   them halves every dB value.
+2. **The bell's pole damping depends on gain.** The prototype denominator is
+   `s² + s·w0/(√G·Q) + w0²`, so it is `1/(2·Q·√G)`, not `1/(2Q)`. Dropping
+   the `√G` costs ~5 dB of shape error at +15 dB and is completely invisible
+   at unity gain, which makes it an easy mistake to ship.
+
+Phase is not traded away for this. The numerator recovery imposes
+`b0 > |b2|` and `b0 + b2 > |b1|`, so the result is minimum phase by
+construction — and for a minimum-phase filter, matching magnitude matches
+phase. Bilinear's phase near Nyquist was the *worse* of the two.
+
+Coefficients are designed in double and stored at the band's working
+precision. **The low shelf is instantiated at `double`, the other two at
+`float`.** It is the only band whose poles reach radius ~0.998 (20 Hz at
+48 kHz), which both amplifies the recursion's own roundoff by ~1/(1−r) and
+makes it nearly cancel its own poles against its zeros. Measured at 20 Hz,
+float32 costs **38 dB of noise floor** and ~1e-2 dB of response error;
+double costs ~20 cycles a frame. Note that it is the *coefficient storage*
+that dominates the response error, not the state — the design solve itself
+lands within 1e-10 dB either way. Shelf slope is fixed at Butterworth;
+`MakePeaking` takes Q, which is what the mid-band Q cycling drives.
 
 **Compressor** (`dsp_compressor.h`) — feed-forward, computed entirely in
 the log domain:
@@ -550,10 +608,67 @@ Things that will bite quietly if broken:
 8. **`Exp()` requires `min > 0`.** A zero lower bound gives a degenerate
    geometric interpolation.
 9. **No two source files may share a basename.** (§5)
+10. **Never write `eq_bank_[eq_live_]`.** The EQ's control→audio handoff is
+    double-buffered; the writer fills the *other* slot and publishes by
+    storing the index. Writing the live slot reintroduces exactly the tearing
+    the buffer exists to prevent. (§1)
+11. **`dsp_biquad.h` stays `<cmath>`-only.** That is what lets `tests/`
+    compile it on a host with no stubbing at all, and the measurement
+    harness is the only thing standing between the coefficient math and a
+    silent regression. (§9)
 
 ---
 
-## 8. Reference
+## 8. Latency budget
+
+The chain is zero-latency today, and the **EQ must stay that way**. Bypass
+is implemented by discarding the wet output and keeping the *same-sample*
+dry (`mastering_dsp.cpp`), so any EQ latency would compare signals from
+different times — bypass becomes a click, and the module's total latency
+changes with bypass state. Fixing that means a matched dry delay line and
+bypass that is no longer true bypass, bought for nothing: the EQ is linear,
+so it does not alias, and oversampling it would only buy decramping, which
+the matched designs already deliver for free.
+
+For the chain as a whole, **64 samples (~1.3 ms) is the ceiling** any future
+stage may claim. There is no delay compensation in a Eurorack rack, so the
+limit is perceptual rather than arithmetic; at the end of a mastering chain
+nothing downstream recombines, so comb filtering is not the binding
+constraint. The two stages that could sensibly spend that budget are the
+**limiter** (which has no lookahead at all today, so it can only react after
+a peak has passed — 1–2 ms is the standard transparent figure) and the
+**saturator** (the one genuinely nonlinear stage, hence the only one where
+oversampling actually suppresses aliasing).
+
+---
+
+## 9. Testing
+
+```sh
+make test          # build and run both host harnesses
+make test-golden   # regenerate the golden coefficient CSV, deliberately
+```
+
+Host-only, no cross-toolchain: `tests/` compiles `dsp_biquad.h` directly and
+`mastering_dsp.cpp` against a six-line `AudioHandle` stub.
+
+- `tests/eq_response_test.cpp` — sweeps the realized filter against the
+  *analog prototype* with no prewarping (prewarping would hide the very
+  cramping error the harness exists to measure), checks every design in the
+  parameter grid for stability and minimum phase, DFTs the real impulse
+  response to confirm the implementation matches its own coefficients, and
+  measures the arithmetic noise floor.
+- `tests/eq_control_test.cpp` — drives the real `SetEq`/`Process` and asserts
+  that a stationary knob is bit-for-bit identical to never calling `SetEq`
+  again. It carries a negative control: gross jitter *must* be detected, or
+  the test is not measuring anything.
+
+If you change the coefficient math, the golden CSV will fail. That is the
+point — regenerate it only when you meant to change the design.
+
+---
+
+## 10. Reference
 
 - SDK framework headers: `lib/alchemy-sdk/framework/include/alchemy/`
 - V2 board class: `lib/alchemy-sdk/hardware/alchemy-lab/v2/include/alchemy/hw/alchemy_lab_v2.h`
