@@ -103,6 +103,7 @@ TpdfDither dith_[2] = {TpdfDither(0x2545F491u), TpdfDither(0x9E3779B9u)};
 void Init(float sample_rate)
 {
     fs_ = sample_rate;
+    comp_.InitSidechain(fs_);   // three fixed sidechain high-passes, designed once
 }
 
 /**
@@ -186,6 +187,35 @@ void SetEq(const EqParams& p)
     eq_designed_valid_  = true;
 }
 
+/**
+ * Direct forward — deliberately NOT the EQ's double-buffered, glided,
+ * dirty-checked pattern above, even though Configure() now does considerably
+ * more work than it used to. The reasons are worth writing down, because
+ * "make the compressor match the EQ" looks like an obvious tidy-up and is not.
+ *
+ * The EQ needs that machinery because its parameters *become poles*. A torn
+ * coefficient set there can be unstable, not merely wrong, and redesigning a
+ * recursion from an ADC-jittering knob 60 times a second zippers audibly.
+ *
+ * None of that transfers:
+ *
+ *   - Nothing Configure() writes is a pole on the audio path. The one
+ *     recursive design in this stage is the sidechain high-pass, whose corner
+ *     is a per-character constant: Init() designs all three once and
+ *     Configure() picks one by index. A torn index cannot exist.
+ *   - Threshold, ratio, attack and release feed a memoryless gain computer
+ *     followed by a 10-4000 ms envelope network. That network IS the parameter
+ *     smoother, and it is 20-2000x slower than the 16 ms control frame, so
+ *     there is no zipper mechanism here to dirty-check away. (The control
+ *     harness measures this rather than assuming it: 0.05 % threshold jitter
+ *     has to stay below -90 dBFS at the output.)
+ *   - The two parameters that DO multiply the audio directly, makeup and mix,
+ *     are eased inside ProcessSample at tau = 5 ms. That also covers the new
+ *     hazard auto-makeup introduces, where moving threshold moves output gain.
+ *   - Tearing across a Configure() is bounded at one 24-sample block of mixed
+ *     parameters, and `character` is written last, so even a character switch
+ *     can only ever mix time constants — never two engines.
+ */
 void SetComp(const CompParams& p)
 {
     comp_.Configure(p, fs_);

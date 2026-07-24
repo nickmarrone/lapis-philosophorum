@@ -39,7 +39,8 @@ void SilenceRestOfChain()
 {
     mastering_dsp::CompParams c{};
     c.threshold_db = 0.f; c.ratio = 1.f; c.attack_ms = 10.f; c.release_ms = 100.f;
-    c.makeup_db = 0.f; c.mix = 1.f; c.soft_knee = false; c.bypass = true;
+    c.makeup_db = 0.f; c.mix = 1.f;
+    c.character = mastering_dsp::kCompPrecise; c.bypass = true;
     mastering_dsp::SetComp(c);
 
     mastering_dsp::OutParams o{};

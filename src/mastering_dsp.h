@@ -21,15 +21,26 @@ struct EqParams {
     float hs_freq_hz, hs_gain_db;
     bool  bypass;
 };
+/**
+ * Compressor character — selects the engine and every constant that goes with
+ * it: knee width, sidechain high-pass corner, timing adaptation, auto-makeup.
+ * The table itself is compressor-private; see dsp_compressor.h.
+ *
+ *   Precise  — no adaptation, narrow knee. The threshold knob is literal.
+ *   Adaptive — crest-factor-driven attack and release.
+ *   Glue     — SSL-bus-style dual time-constant program-dependent release.
+ */
+enum CompCharacter : uint8_t { kCompPrecise = 0, kCompAdaptive = 1, kCompGlue = 2 };
+
 struct CompParams {
-    float threshold_db;   // -40..0
-    float ratio;          // 1..20
-    float attack_ms;      // 0.1..100
-    float release_ms;     // 10..2000
-    float makeup_db;      // 0..20
-    float mix;            // 0..1
-    bool  soft_knee;      // 6 dB knee when true
-    bool  bypass;
+    float   threshold_db;   // -40..0
+    float   ratio;          // 1..20 (the panel tapers this; see mastering.cpp)
+    float   attack_ms;      // 0.1..100
+    float   release_ms;     // 10..2000
+    float   makeup_db;      // 0..20, on top of the character's auto-makeup
+    float   mix;            // 0..1
+    uint8_t character;      // CompCharacter; clamped in Configure
+    bool    bypass;
 };
 struct OutParams {
     float   drive_db;       // 0..24

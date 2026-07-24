@@ -9,8 +9,9 @@
  *      digital designs are supposed to be approximating, with NO prewarping.
  *      That is the entire point: prewarping would hide exactly the cramping
  *      error we are here to measure.
- *   3. A tiny assertion/reporting framework, so a run prints the numbers
- *      even when it passes.
+ *   3. The shared assertion/reporting framework, pulled in from
+ *      test_report.h and re-exported under eqtest:: so a run prints the
+ *      numbers even when it passes.
  *
  * Prototype sources:
  *   Peaking      — Vicanek, "Matched Second Order Digital Filters" eq (42)
@@ -29,6 +30,7 @@
 #include <vector>
 
 #include "dsp_biquad.h"
+#include "test_report.h"
 
 namespace eqtest {
 
@@ -94,6 +96,20 @@ inline cplx ProtoHighShelf(double f, double fc, double gain_lin)
 inline cplx ProtoLowShelf(double f, double fc, double gain_lin)
 {
     return gain_lin * ProtoHighShelf(f, fc, 1.0 / gain_lin);
+}
+
+/**
+ * Second-order high-pass, the prototype MakeHighPass approximates:
+ *   H(s) = s^2 / (s^2 + s*w0/Q + w0^2)
+ * Exactly zero at DC, unity at HF, and |H(jw0)| = Q at the corner — which is
+ * the point the digital design matches. Used by the compressor harness for the
+ * sidechain filter; it lives here because this is where the prototypes live.
+ */
+inline cplx ProtoHighPass(double f, double f0, double q)
+{
+    const double w0 = 2.0 * kPi * f0;
+    const cplx   s  = cplx(0.0, 2.0 * kPi * f);
+    return (s * s) / (s * s + s * (w0 / q) + w0 * w0);
 }
 
 /* ── Band description, so tests can drive all three uniformly ─────────── */
@@ -258,56 +274,10 @@ inline bool IsFinite(const mastering_dsp::BiquadCoeffsT<T>& c)
 
 /* ── Tiny reporting framework ─────────────────────────────────────────── */
 
-struct Report {
-    int failures = 0;
-    int checks   = 0;
-
-    void Section(const char* name)
-    {
-        std::printf("\n\033[1m── %s ", name);
-        for (size_t i = std::string(name).size(); i < 66; i++) std::printf("─");
-        std::printf("\033[0m\n");
-    }
-
-    void Check(bool ok, const std::string& what, const std::string& detail = {})
-    {
-        checks++;
-        if (ok)
-        {
-            std::printf("  \033[32mPASS\033[0m  %-46s %s\n", what.c_str(), detail.c_str());
-        }
-        else
-        {
-            failures++;
-            std::printf("  \033[31mFAIL\033[0m  %-46s %s\n", what.c_str(), detail.c_str());
-        }
-    }
-
-    void Info(const std::string& what, const std::string& detail = {})
-    {
-        std::printf("        %-46s %s\n", what.c_str(), detail.c_str());
-    }
-
-    int Finish()
-    {
-        std::printf("\n%s%d/%d checks passed\033[0m\n\n",
-                    failures ? "\033[31m" : "\033[32m", checks - failures, checks);
-        return failures ? 1 : 0;
-    }
-};
-
-inline std::string Fmt(const char* f, double a)
-{
-    char buf[128];
-    std::snprintf(buf, sizeof buf, f, a);
-    return buf;
-}
-
-inline std::string Fmt(const char* f, double a, double b)
-{
-    char buf[128];
-    std::snprintf(buf, sizeof buf, f, a, b);
-    return buf;
-}
+/* Lives in test_report.h so the compressor harness can share it. Pulled into
+ * this namespace so every existing `eqtest::Report` / `eqtest::Fmt` spelling
+ * keeps working — the extraction is meant to be invisible from here. */
+using testrep::Fmt;
+using testrep::Report;
 
 } // namespace eqtest

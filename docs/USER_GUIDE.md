@@ -3,10 +3,14 @@
 An end-of-chain stereo mastering processor for the Hermetic Modular
 Alchemy Lab. Patch your mix in, get a louder, glued, ceiling-safe mix out.
 
-Everything is **stereo-linked**: there is one set of controls, and the
-compressor and limiter both detect on `max(|L|, |R|)`, so the two channels
-are always gain-matched. The image never shifts because one side got
-squashed harder than the other.
+Everything is **stereo-linked**: there is one set of controls, and one gain
+is applied to both channels, so the image never shifts because one side got
+squashed harder than the other. The two dynamics stages listen slightly
+differently. The limiter takes the louder of the two channels, which is
+what a ceiling has to do. The compressor adds the two channels' *power*,
+the way a stereo-linked analogue compressor sums its detector currents — so
+a hard-panned hit reads 3 dB quieter than a centred one of the same level,
+and no longer ducks the whole mix on its own.
 
 ---
 
@@ -106,32 +110,75 @@ A feed-forward, log-domain bus compressor with a parallel-mix control.
 | Knob | Parameter | Range | Curve |
 |---|---|---|---|
 | K1 | Threshold | −40 dB – 0 dB | linear |
-| K2 | Ratio | 1:1 – 20:1 | linear |
+| K2 | Ratio | 1:1 – 20:1 | compression-amount |
 | K3 | Attack | 0.1 ms – 100 ms | exponential |
 | K4 | Release | 10 ms – 2000 ms | exponential |
-| K5 | Makeup gain | 0 dB – +20 dB | linear |
+| K5 | Makeup gain | 0 dB – +20 dB | linear, on top of auto-makeup |
 | K6 | Mix (dry/wet) | 0 – 1 | linear |
 
 All six draw as blue level arcs.
 
+**The Ratio knob is not linear in ratio.** It is linear in how much
+compression you are asking for, which puts the settings a mastering
+compressor actually lives at where your fingers are: 1.5:1 at a third of
+the way up, 2:1 at halfway, 3:1 at two thirds. 10:1 and 20:1 are crammed
+into the last tenth, which is the right place for them here.
+
 - **B2 tap** — bypass the compressor. The detector keeps tracking while
   bypassed, so gain reduction is already settled when you switch back in.
-- **B3 tap** — toggle the **knee**:
+- **B3 tap** — cycle the **character**:
 
-| Knee | Character | B3 colour |
-|---|---|---|
-| Hard | abrupt onset at threshold | white |
-| Soft | 6 dB quadratic knee | teal |
+| Character | What it does | Knee | Sidechain filter | B3 colour |
+|---|---|---|---|---|
+| Precise | Times exactly as set. Nothing adapts. | 6 dB | 30 Hz | white |
+| Adaptive | Attack and release follow the music | 12 dB | 60 Hz | teal |
+| Glue | Two-stage release: quick recovery, long tail | 18 dB | 90 Hz | crimson |
+
+**Adaptive** watches how peaky the material is. Dense, sustained passages
+get a faster attack and a slower release, so it behaves as a level rider;
+transient-heavy passages get a slower attack, letting the hits through, and
+a faster release, so it is out of the way before the next one. It also
+speeds its release up as a loud passage dies away.
+
+**Glue** is the classic bus-compressor behaviour. Its release is two
+recoveries at once, one quick and one that trails off over seconds, which
+is what stops a slow release from choking the mix and a fast one from
+pumping it. This is the one to reach for first.
+
+**Wide knees move the effective threshold down.** A knee is centred on the
+threshold, so compression starts *half a knee below* the number on the
+knob. On Glue, a threshold of −20 begins working at −29 and does not reach
+its full ratio until −11. That is why it sounds gentler at the same
+setting, and it is the most common surprise on this page. Precise is the
+character where the threshold means what it says.
+
+**The sidechain filter** is why bass no longer runs the show. The
+compressor does not listen below the corner frequency, so a kick drum stops
+pumping the whole mix down with it. The kick is still compressed — it just
+no longer *decides* the compression. Note this also means a big low-shelf
+boost on page 1 changes the sound without changing how hard the compressor
+works.
 
 **About Mix.** The mix control gives you parallel ("New York")
 compression: at 0 you hear only the dry signal, at 1 only the compressed
-signal. Makeup gain applies to the **wet** path only, so raising makeup
-with mix below 1 also shifts the wet/dry balance in level terms — pushing
-makeup makes the compressed layer louder relative to the dry one.
+signal.
 
-**Starting point for glue:** threshold around −18 dB, ratio 2:1–4:1,
-attack ~10 ms, release ~200 ms, soft knee, mix at 1.0. Then back the mix
-off toward 0.7 if it feels squashed.
+Adaptive and Glue apply **auto-makeup** — they work out how much level the
+compression is costing at a nominal bus level and put it back
+automatically, so bypassing (B2) is a fair A/B and the Mix knob crossfades
+between two things at roughly the same loudness. The Makeup knob is extra
+on top of that. Precise leaves makeup entirely to you.
+
+Makeup applies to the **wet** path only, so with mix below 1 pushing makeup
+also makes the compressed layer louder relative to the dry one.
+
+**Starting point for glue:** Glue character, threshold around −22 dB, ratio
+2:1, attack 10–30 ms, release ~300 ms, mix at 1.0 — aim for 2–4 dB of gain
+reduction on the loud parts. Then back the mix off toward 0.7 if it feels
+squashed.
+
+**Starting point for transparent levelling:** Adaptive, threshold −18 dB,
+ratio 1.5:1, attack 10 ms, release ~200 ms, mix 1.0.
 
 ---
 
@@ -167,11 +214,15 @@ a symmetric shaper. A DC blocker after the shaper removes the offset
 itself, so no DC reaches the output. At centre the shaper is perfectly
 symmetric.
 
-**The limiter** has instantaneous attack and no lookahead: gain drops the
-moment a peak exceeds the ceiling, then recovers at the release time you
-set. Fast release settings are transparent on dense material but will
-pump audibly on sparse, transient-heavy material — slow the release down
-if you hear it breathing.
+**The limiter** looks 1 ms ahead. It sees a peak coming before you hear it
+and has the gain down by the time it arrives, so loud transients are ridden
+rather than clipped. It then recovers at the release time you set. Fast
+release settings are transparent on dense material but will pump audibly on
+sparse, transient-heavy material — slow the release down if you hear it
+breathing.
+
+That 1 ms is the module's entire latency, and it is there whether or not
+the limiter is doing anything.
 
 **⚠️ Trim sits *after* the limiter.** Positive trim can push the signal
 back above the ceiling you just set, and past 0 dBFS it will clip the
@@ -208,7 +259,7 @@ conservative.
 The module has **16 preset slots** in flash, with wear levelling.
 
 A preset stores everything: all eighteen knob values across all three
-pages, all three bypass states, the mid-Q index, the knee setting, the
+pages, all three bypass states, the mid-Q index, the compressor character, the
 saturation shape, and your settings (brightness).
 
 ### Saving and loading
@@ -236,6 +287,12 @@ Preset slots are stamped with a schema hash. If the firmware is updated in
 a way that changes what a preset contains, old slots are treated as empty
 rather than being restored incorrectly. Losing your presets after a
 firmware update is the safety mechanism working, not a fault.
+
+**This release invalidates existing slots**, for two independent reasons:
+the compressor's two-state knee toggle became a three-state character, and
+the Ratio knob was re-tapered, so a stored ratio position would restore a
+different ratio than the one you saved. You will need to re-save your
+chains.
 
 ---
 
@@ -306,10 +363,11 @@ survives reflashes.
 | Converter word length | 24-bit |
 | Channels | Stereo, fully linked |
 | EQ | 3 bands, ±15 dB, magnitude-matched biquads, zero latency |
-| Compressor | Feed-forward, log-domain, 1:1–20:1, hard/soft knee, parallel mix |
+| Compressor | Feed-forward, log-domain, 1:1–20:1, three characters, sidechain HPF, parallel mix |
 | Saturation | Cubic soft clip or hard clip, ±0.3 asymmetry, DC-blocked |
-| Limiter | Brickwall, instantaneous attack, no lookahead |
+| Limiter | Brickwall, 1 ms lookahead, exponential release |
 | Dither | TPDF, 0–2 LSB @ 24-bit |
+| Latency | 48 samples (1.0 ms), all of it the limiter |
 | Presets | 16 slots, flash, wear-levelled |
 | Control rate | ~60 Hz frames, 1 ms button polling |
 

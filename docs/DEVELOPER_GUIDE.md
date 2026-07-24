@@ -94,7 +94,7 @@ src/
 ├── mastering_dsp.cpp      chain orchestration + audio callback
 ├── dsp_common.h           shared constexpr + inline helpers
 ├── dsp_biquad.h           matched-magnitude biquad (Direct Form I)
-├── dsp_compressor.h       log-domain feed-forward compressor
+├── dsp_compressor.h       log-domain feed-forward glue compressor
 ├── dsp_saturation.h       waveshaper + DC blocker
 ├── dsp_limiter.h          brickwall limiter
 ├── dsp_dither.h           xorshift32 TPDF generator
@@ -237,29 +237,36 @@ which get their own `Serializable`:
 struct ChainModes : public alchemy::Serializable
 {
     uint8_t eq_bypass, comp_bypass, sat_bypass;
-    uint8_t mid_q_index, soft_knee, sat_type;
+    uint8_t mid_q_index, comp_character, sat_type;
 
     size_t   SerializedSize() const override { return 6; }
     void     Serialize(uint8_t* out) const override;
     bool     Deserialize(const uint8_t* in) override;   // clamps every field
-    uint32_t SchemaHash() const override { return 0x4D535431u; }
+    uint32_t SchemaHash() const override { return 0x4D535432u; }
 };
 ```
 
 Two things to note:
 
 **`Deserialize` clamps, it doesn't validate.** `in[3] % 3u` for the Q
-index, `& 1u` for the booleans. A corrupt or foreign slot can therefore
+index, `in[4] % 3u` for the compressor character, `& 1u` for the booleans. A corrupt or foreign slot can therefore
 never push an out-of-range index into `kMidQTable[]` or into the DSP. This
 is the cheap, correct discipline for flash-backed state — don't relax it.
 
-**`SchemaHash()` is a manual constant** (`0x4D535431` = "MST1"). The
+**`SchemaHash()` is a manual constant** (`0x4D535432` = "MST2"). The
 preset store XORs every managed component's hash and stamps slots with the
 result; a mismatch on load makes the slot read as empty rather than
 restoring misaligned bytes. **If you change `ChainModes`'s field layout or
 size, bump this constant.** If you forget, old slots will deserialize into
 the new layout and produce garbage — the one failure mode the mechanism
 exists to prevent.
+
+It was last bumped MST1 → MST2 when byte 4 changed from a two-state
+soft-knee flag to a three-state compressor character. Note that the same
+release also re-tapered the Ratio knob (see §4.2), which changes what a
+stored `Pager` norm *means* without changing its layout — a hash bump
+would have been required for that alone. When a knob's mapping changes,
+the stored values are stale even though nothing about the format is.
 
 Registration order in `main()` is the on-flash byte order:
 
@@ -329,8 +336,14 @@ bypass is click-free and the compressor is already settled when it comes
 back in. Preserve this property if you add a stage.
 
 **Stereo linkage is structural**, not a parameter. `Compressor` and
-`Limiter` take `(float& l, float& r)` and detect on
-`fmaxf(fabsf(l), fabsf(r))` — there is no way to configure them apart.
+`Limiter` take `(float& l, float& r)` and apply one gain to both — there is
+no way to configure them apart. They do *not* detect the same way, though:
+the limiter uses `fmaxf(fabsf(l), fabsf(r))`, which is right for a device
+whose job is a ceiling no sample may cross, while the compressor sums
+**power**, `0.5*(l² + r²)`, which is what a stereo-linked VCA does when it
+sums its two sidechain currents. The difference shows on one-sided
+material: max-linking reads a hard-panned hit at its full level and ducks
+the whole image with it; power-linking reads it 3.01 dB lower.
 `Saturator` is per-channel by index (it needs its own DC-blocker state per
 side) but shares one coefficient set. The EQ shares one coefficient set
 across two `BiquadState` arrays.
@@ -378,27 +391,83 @@ that dominates the response error, not the state — the design solve itself
 lands within 1e-10 dB either way. Shelf slope is fixed at Butterworth;
 `MakePeaking` takes Q, which is what the mid-band Q cycling drives.
 
-**Compressor** (`dsp_compressor.h`) — feed-forward, computed entirely in
-the log domain:
+**Compressor** (`dsp_compressor.h`) — feed-forward glue compressor,
+computed entirely in the log domain, with two engines behind three
+characters:
 
 ```
-det    = max(|l|, |r|)
-lvl_db = 20·log10(det)              // via kLog10Scale · logf(det)
-over   = lvl_db − threshold_db
-target = over · (1/ratio − 1)       // hard knee, above threshold
-gr_db += coef · (target − gr_db)    // coef = attack if going down, else release
-gain   = 10^(gr_db/20)
+sl, sr = sidechain high-pass (per character), detector path only
+pw     = 0.5·(sl² + sr²)            // power-sum stereo link
+lvl_db = 10·log10(pw)               // via kLog10ScaleP · logf(pw)
+c      = AttenDb(lvl_db − threshold_db)      // POSITIVE attenuation, soft knee
+y1     = max(c, y1 + rel·(c − y1))           // release stage (a hold, not a branch)
+y      = y  + atk·(y1 − y)                   // attack stage
+gr_db  = −y
+gain   = 10^(−y/20) · makeup
 ```
 
-The soft knee is a quadratic interpolation across a fixed ±3 dB region
-(`kKneeDb = 6`), matching the standard piecewise-quadratic formulation.
+Gain computer first, smoothing second — the arrangement Giannoulis,
+Massberg & Reiss recommend (JAES 60(6):399-408, 2012, §III-B). Smoothing
+the *level* instead would make a 10:1 setting attack five times faster than
+a 2:1 setting at the same knob position.
 
-Two guards matter: signals below `kMinDetLin` (−90 dBFS) short-circuit to
-zero gain reduction rather than taking `logf` of a denormal, and the
-`expf` is skipped entirely when `gr_db > -0.01` (the overwhelmingly common
-case of no compression). Even so, **this stage runs `logf` per sample** —
-it is the single most expensive thing in the chain and the first place to
-look if you find yourself over budget.
+| Character | Engine | Knee | Sidechain HPF | Auto-makeup |
+|---|---|---|---|---|
+| Precise | no adaptation | 6 dB | 30 Hz | no |
+| Adaptive | crest-driven attack/release | 12 dB | 60 Hz | yes |
+| Glue | dual time-constant release | 18 dB | 90 Hz | yes |
+
+Everything in that table lives in `kCharSpec`, compressor-private, indexed
+by `CompParams::character`.
+
+**The sign convention is the thing to get right.** Attenuation is carried
+as a **positive** dB value throughout the stage and negated exactly once,
+at `gr_db`, because the literature's decoupled detector is written for a
+positive control signal. `c` rising means more attenuation, which is the
+attack direction, which is why the release stage uses `fmaxf`. In the old
+negative gain-reduction convention every `fmaxf` here would be an `fminf`
+— that is why the old `(target < gr_db) ? att : rel` was correct. Flip one
+without the other and you get instant release with a slow attack.
+`comp_response_test`'s timing test is what catches it: the two measured
+numbers swap.
+
+**Why the smooth decoupled detector.** The branching one-pole this
+replaced does *not* have a kink at the handover — its increment
+`a·(c − gr)` vanishes exactly where the coefficient switches. Its defect is
+that it starts releasing on every dip of the waveform, twice per cycle, so
+the envelope ripples at the program frequency and amplitude-modulates the
+whole mix. Measured at 4:1, 20 ms / 200 ms: 0.140 dB pk-pk against
+0.017 dB at 50 Hz, 0.070 against 0.005 at 100 Hz. Worst exactly where a
+full-range mix keeps its energy.
+
+**The crest estimate is more than crest factor, on purpose.** In steady
+state it is exact — a sine reads 3.0103 dB, a 5 %-duty burst train 19 dB.
+But the peak and RMS followers decay at different rates (150 ms against
+25 ms), so a sustained *drop* in level leaves the estimate climbing:
+3.3 dB → 15.3 dB at 3 ms / 750 ms after a 30 dB step down, taking the
+release from 400 ms to 86 ms. That is an analogue auto-release, and it is
+asserted in the harness so a follower retune cannot quietly lose it. A step
+*up* moves the estimate 0.23 dB, so onsets do not jolt the timing.
+
+**The sidechain filters are constants, not designs.** `InitSidechain()`
+builds all three from `MakeHighPass` once, from `Init()`; `Configure()` only
+selects one by index. That is what lets `SetComp` stay a plain direct
+forward where `SetEq` needs double-buffering — a torn five-coefficient set
+can be unstable, a torn index cannot exist. The reasoning is written out
+above `SetComp` in `mastering_dsp.cpp`.
+
+**Cost:** one `logf` and one `expf` per sample, plus one `logf` per
+`kCrestDecim` (8) samples. No `sqrtf` — the power-sum's square root is
+folded into `kLog10ScaleP` (10/ln10 rather than 20/ln10), so the better
+stereo link is free. Roughly 220 cycles/sample against the old design's
+~166, or about 2.3 % of one core. Guards: `pw` floors at `kMinDetPow`
+(−90 dBFS) rather than taking `logf` of a denormal, and the `expf` is
+skipped when `y < 0.01` dB.
+
+**Latency: zero, and it must stay zero.** Bypass here takes the
+*same-sample* dry signal, so a lookahead line would turn bypass into a
+click and make the module's latency depend on bypass state. The sidechain
+biquads are on the detector path, not the audio path.
 
 `gr_db` is public and exposed via `CompGainReductionDb()` (sign-flipped to
 a positive dB figure) for a gain-reduction meter. Nothing currently
@@ -412,6 +481,23 @@ shaped:
 - cubic soft clip: `1.5·(x − x³/3)`, saturating to ±1 outside |x| ≥ 1
 - hard clip: `clamp(x, −1, 1)`
 
+The shaper is **not** evaluated pointwise. It uses first-order
+antiderivative anti-aliasing (Parker et al., DAFx-16): the output is the
+integral-mean of `f` over `[x[n−1], x[n]]`,
+
+```
+y[n] = (F(x[n]) − F(x[n−1])) / (x[n] − x[n−1])
+```
+
+with `F` the closed-form antiderivative, made continuous at the piecewise
+boundaries ±1. That buys ~20 dB of alias suppression with no oversampling
+and no latency. When the input barely moves (`|dx| < 1e-7`) the quotient is
+ill-conditioned and it falls back to `f` of the midpoint.
+
+Note this is the one stage whose `Configure()` *does* reset running state —
+the ADAA history is meaningless if the shape function underneath it just
+changed. Everywhere else, resetting state in `Configure()` is a pop.
+
 `offset_shaped` (the shaper's response to the offset alone) is precomputed
 in `Configure()` and subtracted from the output, which removes most of the
 DC the asymmetry introduces; a one-pole ~5 Hz high-pass per channel
@@ -419,20 +505,29 @@ removes the remainder. Both are needed — the static subtraction handles
 the steady-state offset, the filter handles what the shaper's
 nonlinearity does to it under signal.
 
-**Limiter** (`dsp_limiter.h`) — instantaneous attack, exponential release,
-no lookahead:
+**Limiter** (`dsp_limiter.h`) — brickwall with **`kLookahead` = 48 samples
+(1 ms at 48 kHz)** of lookahead, fast one-pole attack, exponential release:
 
 ```cpp
-gd = (peak > ceiling) ? ceiling / peak : 1.f;
-if (gd < gain) gain = gd;               // instant drop
+buf_l[write] = l;                       // audio into a circular delay line
+gd = (peak > ceiling) ? ceiling / peak : 1.f;    // detect on the PRE-delay input
+if (gd < gain) gain += atk_coef * (gd - gain);   // ramp down ahead of the peak
 else           gain += rel_coef * (gd - gain);   // smooth recovery
+l = buf_l[rd] * gain;                   // apply to the delayed audio
 ```
 
-The post-gain `Clampf` to `±ceiling_lin` is a belt-and-braces guard, not
-the primary mechanism — the gain computation alone satisfies the ceiling
-for the current sample. Because there's no lookahead, transient limiting
-is nonlinear distortion rather than gain riding; that's the accepted
-trade for zero latency.
+Detection runs on the current input, which is `kLookahead` samples *ahead*
+of what is being output, so the gain is already down by the time the peak
+arrives. `atk_coef` is sized as five time constants across the lookahead
+(`1 − exp(−5/kLookahead)`), which settles to within ~1 % in exactly the
+window available. Transient limiting is therefore gain riding rather than
+nonlinear distortion.
+
+The post-gain `Clampf` to `±ceiling_lin` is a belt-and-braces guard for
+that residual ~1 %, not the primary mechanism.
+
+`Configure()` deliberately does not reset `gain` or `write` — that would
+pop on a live parameter change.
 
 **TPDF dither** (`dsp_dither.h`) — two independent xorshift32 draws
 subtracted to give a triangular distribution, scaled to `dither_lsb ·
@@ -574,6 +669,24 @@ Header-only means no `CPP_SOURCES` edit.
 Changing the page count changes `Pager`'s serialized size, so **existing
 presets are invalidated.**
 
+### Add a compressor character
+
+1. One row in `kCharSpec` (`dsp_compressor.h`) — knee, sidechain corner,
+   the four adaptation multipliers, the dual-TC pair, auto-makeup fraction.
+   `InitSidechain()` designs one high-pass per row, so nothing else is
+   needed for the filter.
+2. One colour in `kCharColors` (`mastering_palette.h`). Its array length is
+   the modulus of the B3 cycle — keep them in step.
+3. Widen the `% 3u` in `ChainModes::Deserialize` **and** the `% 3` in
+   `UpdateParams`'s B3 case, and bump `SchemaHash()`.
+4. Widen the bound check in `Compressor::Configure` (`p.character < 3`).
+5. Extend `kChars[]` in `tests/comp_response_test.cpp` and regenerate the
+   goldens — the curve and envelope grids are per character.
+
+Steps 3 and 4 are three separate moduli that all have to agree. If they
+disagree the symptom is a character that is unreachable, or one that reads
+past the end of a table; there is no diagnostic.
+
 ### Add persistent state
 
 Extend `ChainModes` (bump `SchemaHash()`, extend `SerializedSize()`,
@@ -616,41 +729,61 @@ Things that will bite quietly if broken:
     compile it on a host with no stubbing at all, and the measurement
     harness is the only thing standing between the coefficient math and a
     silent regression. (§9)
+12. **The compressor adds no latency, and must not.** Its bypass takes the
+    same-sample dry signal (§4.1), so a lookahead line would turn bypass
+    into a click — and it would spend budget the saturator is holding.
+    (§8)
+13. **Inside `Compressor`, gain reduction is a POSITIVE attenuation**; only
+    `gr_db` is negated. The decoupled release stage uses `fmaxf`
+    accordingly. Flipping either without the other silently swaps attack
+    and release. (§4.2)
 
 ---
 
 ## 8. Latency budget
 
-The chain is zero-latency today, and the **EQ must stay that way**. Bypass
-is implemented by discarding the wet output and keeping the *same-sample*
-dry (`mastering_dsp.cpp`), so any EQ latency would compare signals from
-different times — bypass becomes a click, and the module's total latency
-changes with bypass state. Fixing that means a matched dry delay line and
-bypass that is no longer true bypass, bought for nothing: the EQ is linear,
-so it does not alias, and oversampling it would only buy decramping, which
-the matched designs already deliver for free.
+**Chain latency today is 48 samples (1.0 ms)**, all of it the limiter's
+lookahead. `comp_control_test`'s `TestChainLatency` measures it end to end
+rather than asserting it from prose — this section has gone stale once
+already, and now something fails when it does.
 
 For the chain as a whole, **64 samples (~1.3 ms) is the ceiling** any future
-stage may claim. There is no delay compensation in a Eurorack rack, so the
-limit is perceptual rather than arithmetic; at the end of a mastering chain
-nothing downstream recombines, so comb filtering is not the binding
-constraint. The two stages that could sensibly spend that budget are the
-**limiter** (which has no lookahead at all today, so it can only react after
-a peak has passed — 1–2 ms is the standard transparent figure) and the
-**saturator** (the one genuinely nonlinear stage, hence the only one where
-oversampling actually suppresses aliasing).
+stage may claim, so **16 samples remain**. There is no delay compensation in
+a Eurorack rack, so the limit is perceptual rather than arithmetic; at the
+end of a mastering chain nothing downstream recombines, so comb filtering is
+not the binding constraint.
+
+Two stages must never spend any of it:
+
+- **The EQ.** Bypass is implemented by discarding the wet output and keeping
+  the *same-sample* dry (`mastering_dsp.cpp`), so any EQ latency would
+  compare signals from different times — bypass becomes a click, and the
+  module's total latency changes with bypass state. Fixing that means a
+  matched dry delay line and bypass that is no longer true bypass, bought
+  for nothing: the EQ is linear, so it does not alias, and oversampling it
+  would only buy decramping, which the matched designs already deliver free.
+- **The compressor**, for exactly the same bypass reason. It is also the
+  stage that needs it least: a glue compressor's attack is measured in tens
+  of milliseconds, so lookahead buys nothing a slower attack does not.
+
+The remaining 16 samples are earmarked for the **saturator** — the one
+genuinely nonlinear stage, hence the only one where oversampling actually
+suppresses aliasing beyond what its ADAA already does.
 
 ---
 
 ## 9. Testing
 
 ```sh
-make test          # build and run both host harnesses
-make test-golden   # regenerate the golden coefficient CSV, deliberately
+make test          # build and run all four host harnesses
+make test-golden   # regenerate the golden CSVs, deliberately
 ```
 
-Host-only, no cross-toolchain: `tests/` compiles `dsp_biquad.h` directly and
-`mastering_dsp.cpp` against a six-line `AudioHandle` stub.
+Host-only, no cross-toolchain: `tests/` compiles `dsp_biquad.h` and
+`dsp_compressor.h` directly, and `mastering_dsp.cpp` against a six-line
+`AudioHandle` stub. `tests/test_report.h` holds the shared
+assert-and-print framework; `eq_test_common.h` and `comp_test_common.h`
+hold the measurement support for their respective stages.
 
 - `tests/eq_response_test.cpp` — sweeps the realized filter against the
   *analog prototype* with no prewarping (prewarping would hide the very
@@ -662,9 +795,40 @@ Host-only, no cross-toolchain: `tests/` compiles `dsp_biquad.h` directly and
   that a stationary knob is bit-for-bit identical to never calling `SetEq`
   again. It carries a negative control: gross jitter *must* be detected, or
   the test is not measuring anything.
+- `tests/comp_response_test.cpp` — the compressor alone: static curve
+  against the analytic gain computer, knee width and C¹-ness, attack and
+  release settling, envelope ripple, sidechain response, power-sum linking,
+  the dual-time-constant release, crest calibration and adaptation,
+  auto-makeup level match, mix law, and zero latency.
+- `tests/comp_control_test.cpp` — the real `SetComp`/`Process`, plus the
+  end-to-end chain latency measurement that keeps §8 honest.
 
-If you change the coefficient math, the golden CSV will fail. That is the
-point — regenerate it only when you meant to change the design.
+**Negative controls are the point, not decoration.** Four of the
+compressor's assertions ship with a deliberately broken model that the same
+bound must reject — the old branching one-pole for envelope ripple, a hard
+knee for knee continuity, `Precise` for both the dual-exponential fit and
+the adaptation. A continuity bound loose enough to pass will also pass the
+thing it was meant to catch, and nothing in the output tells you which. If
+you add an assertion of that shape, add its control too.
+
+**Two things the compressor harness does that the EQ's does not**, both
+forced by the stage rather than by taste:
+
+- It cannot assert bit-identity for a stationary knob. The compressor has a
+  running envelope and a 5 ms parameter ease, and nothing in `SetComp` is
+  dirty-checked. The claim it makes instead is that 0.05 % threshold jitter
+  moves the output gain by under 0.05 dB (measured: 0.02 dB) — which is
+  precisely the evidence for *not* giving this stage the EQ's handoff.
+- It flushes the chain with silence between scenarios. `mastering_dsp`
+  keeps chain state at file scope and `Init()` does not clear it — correct
+  for firmware that calls `Init()` once, fatal for a harness that runs
+  several scenarios in one process. Without the flush, the latency probe
+  finds a leftover sample instead of its own impulse.
+
+If you change the coefficient math the EQ golden will fail; if you change
+the compressor's curve or its timing, `comp_curve.csv` or
+`comp_envelope.csv` will. That is the point — regenerate only when you
+meant to change the design, and read the diff before you commit it.
 
 ---
 
