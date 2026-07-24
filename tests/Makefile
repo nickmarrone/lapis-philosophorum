@@ -18,7 +18,8 @@ BUILD    := build
 RESPONSE := $(BUILD)/eq_response_test
 CONTROL  := $(BUILD)/eq_control_test
 
-COMMON   := eq_test_common.h ../src/dsp_biquad.h
+REPORT   := test_report.h
+COMMON   := eq_test_common.h $(REPORT) ../src/dsp_biquad.h
 DSP_SRC  := ../src/mastering_dsp.cpp
 DSP_HDRS := ../src/mastering_dsp.h ../src/dsp_common.h ../src/dsp_compressor.h \
             ../src/dsp_limiter.h ../src/dsp_saturation.h ../src/dsp_dither.h
