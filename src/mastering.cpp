@@ -4,9 +4,9 @@
  *
  * Pure DSP in mastering_dsp.* implements:
  * - Three-band EQ (low shelf / peaking mid / high shelf), stereo-linked params
- * - Log-domain feed-forward compressor (hard or soft knee)
+ * - Log-domain feed-forward glue compressor (three characters, two engines)
  * - Waveshaper saturation (cubic soft clip or hard clip) + DC blocker
- * - Zero-attack peak limiter
+ * - Lookahead peak limiter
  * - Output trim + continuous TPDF dither
  *
  * This file implements:
@@ -15,7 +15,7 @@
  * - Pot-catch on page switch (no value jumps), via Pager
  * - A short tap on B2 toggles the current page's bypass
  * - A short tap on B3 cycles/toggles the current page's secondary mode
- *   (EQ mid Q, compressor knee, saturation type)
+ *   (EQ mid Q, compressor character, saturation type)
  * - LED ring per pot displaying its value; B2/B3 button LEDs show bypass
  *   state and secondary mode
  * - Save and recall presets with flash wear leveling
@@ -76,9 +76,27 @@ static VirtualKnob thresh = VirtualKnob(0, "Thresh")
     .Linear(-40.f, 0.f)
     .Ring(Level(kCompPalette.arc));
 
+/* Ratio is tapered in "compression amount" a = 1 - 1/ratio, which is literally
+ * the slope the gain computer uses — so the taper is linear in the quantity
+ * that actually does the work rather than in the ratio's reciprocal.
+ *
+ * The old Linear(1, 20) buried every setting a mastering glue compressor is
+ * ever used at (1.2:1 - 3:1) inside the first 10 % of knob travel, and .Exp()
+ * cannot fix it either: Exp(1.2, 20) still only gives that span a third of the
+ * knob. In compression amount, a = 0 -> 1:1, 0.33 -> 1.5:1, 0.5 -> 2:1,
+ * 0.667 -> 3:1, 0.9 -> 10:1, 0.95 -> 20:1 — half the travel sits below 2:1.
+ *
+ * The mapping lives here, at the control layer, so CompParams keeps carrying
+ * plain engineering units across the seam. */
 static VirtualKnob ratio = VirtualKnob(1, "Ratio")
-    .Linear(1.f, 20.f)
+    .Linear(0.f, 0.95f)
     .Ring(Level(kCompPalette.arc));
+
+static inline float RatioFromAmount(float a)
+{
+    const float amt = a < 0.f ? 0.f : (a > 0.95f ? 0.95f : a);
+    return 1.f / (1.f - amt);
+}
 
 static VirtualKnob attack = VirtualKnob(2, "Attack")
     .Exp(0.1f, 100.f)
@@ -148,12 +166,12 @@ static Settings    settings(hw, &pager);
  * never push an out-of-range index into the DSP. */
 struct ChainModes : public alchemy::Serializable
 {
-    uint8_t eq_bypass   = 0;
-    uint8_t comp_bypass = 0;
-    uint8_t sat_bypass  = 0;
-    uint8_t mid_q_index = 0;
-    uint8_t soft_knee   = 0;
-    uint8_t sat_type    = 0;
+    uint8_t eq_bypass      = 0;
+    uint8_t comp_bypass    = 0;
+    uint8_t sat_bypass     = 0;
+    uint8_t mid_q_index    = 0;
+    uint8_t comp_character = 0;
+    uint8_t sat_type       = 0;
 
     size_t SerializedSize() const override { return 6; }
 
@@ -163,22 +181,26 @@ struct ChainModes : public alchemy::Serializable
         out[1] = comp_bypass;
         out[2] = sat_bypass;
         out[3] = mid_q_index;
-        out[4] = soft_knee;
+        out[4] = comp_character;
         out[5] = sat_type;
     }
 
     bool Deserialize(const uint8_t* in) override
     {
-        eq_bypass   = in[0] & 1u;
-        comp_bypass = in[1] & 1u;
-        sat_bypass  = in[2] & 1u;
-        mid_q_index = in[3] % 3u;
-        soft_knee   = in[4] & 1u;
-        sat_type    = in[5] & 1u;
+        eq_bypass      = in[0] & 1u;
+        comp_bypass    = in[1] & 1u;
+        sat_bypass     = in[2] & 1u;
+        mid_q_index    = in[3] % 3u;
+        comp_character = in[4] % 3u;
+        sat_type       = in[5] & 1u;
         return true;
     }
 
-    uint32_t SchemaHash() const override { return 0x4D535431u; }
+    /* MST2. Bumped from MST1 when byte 4 went from a 2-state soft-knee flag to
+     * a 3-state character index — and the Ratio knob's taper changed meaning at
+     * the same time, so old slots would restore a different ratio as well as a
+     * different mode. Both reasons independently require the bump. */
+    uint32_t SchemaHash() const override { return 0x4D535432u; }
 };
 static ChainModes modes;
 
@@ -246,9 +268,9 @@ static void UpdateParams()
     if (b3_tap.tap) {
         b3_tap.tap = false;
         switch (page) {
-            case 0: modes.mid_q_index = (modes.mid_q_index + 1) % 3; break;
-            case 1: modes.soft_knee   = !modes.soft_knee;            break;
-            default: modes.sat_type   = !modes.sat_type;             break;
+            case 0: modes.mid_q_index    = (modes.mid_q_index + 1) % 3;    break;
+            case 1: modes.comp_character = (modes.comp_character + 1) % 3; break;
+            default: modes.sat_type      = !modes.sat_type;                break;
         }
     }
 
@@ -260,9 +282,10 @@ static void UpdateParams()
     });
 
     mastering_dsp::SetComp({
-        thresh.Value(), ratio.Value(), attack.Value(), release.Value(),
+        thresh.Value(), RatioFromAmount(ratio.Value()),
+        attack.Value(), release.Value(),
         makeup.Value(), mix.Value(),
-        modes.soft_knee   != 0,
+        modes.comp_character,
         modes.comp_bypass != 0,
     });
 
@@ -294,9 +317,9 @@ static void RenderButtons(uint32_t t_ms)
 
     LedPanel::Rgb mode_color;
     switch (page) {
-        case 0:  mode_color = kQColors   [modes.mid_q_index]; break;
-        case 1:  mode_color = kKneeColors[modes.soft_knee];   break;
-        default: mode_color = kSatColors [modes.sat_type];    break;
+        case 0:  mode_color = kQColors   [modes.mid_q_index];    break;
+        case 1:  mode_color = kCharColors[modes.comp_character]; break;
+        default: mode_color = kSatColors [modes.sat_type];       break;
     }
     hw.leds.SetButtonPair(2, mode_color);
 
