@@ -5,14 +5,20 @@ Lab](https://hermeticmodular.com/modules/alchemy-lab) module, built on the
 [Alchemy SDK](https://github.com/hermetic-modular/alchemy-sdk).
 
 Signal path: In → 3-band EQ → Compressor → Saturation → Limiter → Output
-Trim → Dither → Out, stereo-linked throughout (one set of controls; the
-compressor and limiter detect `max(|L|,|R|)` so the two channels never
-drift apart). Three pages of six knobs each:
+Trim → Dither → Out, stereo-linked throughout — one set of controls and one
+gain applied to both channels, so they never drift apart. The limiter
+detects `max(|L|,|R|)`; the compressor sums the two channels' power, the
+way a stereo-linked analogue compressor sums its detector currents. Three
+pages of six knobs each:
 
 - **Page 1 — EQ (amber).** Low shelf, mid peak, and high shelf, each with
   freq/gain; the mid band's Q cycles between three widths.
-- **Page 2 — Compressor (blue).** Threshold, ratio, attack, release,
-  makeup gain, and dry/wet mix, with a hard/soft knee toggle.
+- **Page 2 — Compressor (blue).** A log-domain feed-forward glue
+  compressor: threshold, ratio, attack, release, makeup gain, and dry/wet
+  mix, with three characters on B3 — Precise, crest-Adaptive, and an
+  SSL-style dual-time-constant Glue. Each character carries its own knee
+  width (6 / 12 / 18 dB), sidechain high-pass corner (30 / 60 / 90 Hz), and
+  auto-makeup.
 - **Page 3 — Output (red).** Saturation drive and asymmetry feed a
   brickwall limiter (ceiling, release), followed by output trim and TPDF
   dither depth (0–2 LSB at 24-bit, matching the codec's native word
@@ -20,8 +26,8 @@ drift apart). Three pages of six knobs each:
 
 Controls: **B1** tap cycles pages. **B2** tap toggles bypass for the
 current page's stage (EQ / compressor / saturation). **B3** tap cycles the
-current page's mode (EQ: mid-Q 0.707 / 1.5 / 4.0; compressor: hard/soft
-knee; output: saturation cubic-soft / hard clip). **B2+B3** held for 2 s
+current page's mode (EQ: mid-Q 0.707 / 1.5 / 4.0; compressor: Precise /
+Adaptive / Glue; output: saturation cubic-soft / hard clip). **B2+B3** held for 2 s
 enters the SDK's settings mode, same as the template. Presets and settings
 are kept from the template; **param lock and CV routing have been
 removed** — every knob is a direct, unlatched control.
