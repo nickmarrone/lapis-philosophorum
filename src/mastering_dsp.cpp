@@ -15,6 +15,7 @@
 
 #include "mastering_dsp.h"
 #include "dsp_common.h"
+#include "dsp_analysis.h"
 #include "dsp_biquad.h"
 #include "dsp_compressor.h"
 #include "dsp_limiter.h"
@@ -84,6 +85,11 @@ Compressor comp_;
 Saturator  sat_;
 Limiter    lim_;
 
+// Envelope analysis for the CV jacks. Not in the signal path — it only reads
+// the post-limiter samples on their way out. Gated by its own enable flag so
+// the five modulation modes that do not use it cost nothing in the ISR.
+Analyzer   anl_;
+
 // Output trim. Eased on the audio side at 5 ms, like every other scalar in this
 // chain that multiplies the audio directly (the compressor's makeup and mix,
 // the saturator's drive and mix). It is the only one that used to be written
@@ -107,6 +113,7 @@ void Init(float sample_rate)
     fs_ = sample_rate;
     comp_.InitSidechain(fs_);   // three fixed sidechain high-passes, designed once
     sat_.Init(fs_);             // sets the DC-blocker pole and the 5 ms param ease
+    anl_.Init(fs_);             // crossover poles; follower times come from SetAnalysis
     trim_ease_ = MsToCoef(5.f, fs_);
 }
 
@@ -254,6 +261,39 @@ float CompGainReductionDb()
     return -comp_.gr_db;
 }
 
+/* The limiter already carries its applied gain as a linear scalar, so its
+ * reduction is derived here at control rate rather than stored per sample —
+ * the hot loop is untouched. `gain` is 1.0 at rest and only ever <= 1. */
+float LimGainReductionDb()
+{
+    const float g = lim_.gain;
+    if (g >= 1.f || g <= 0.f) return 0.f;
+    return -20.f * log10f(g);
+}
+
+void SetAnalysis(float attack_ms, float release_ms, bool enabled)
+{
+    anl_.Configure(attack_ms, release_ms, enabled);
+}
+
+void ReadTelemetry(ChainTelemetry& t)
+{
+    /* Plain float loads, matching the CompGainReductionDb contract: these are
+     * independent single-word metering values, not a parameter set that has to
+     * be consistent with itself. A torn read costs one stale CV sample at
+     * 250 Hz, which is not observable; a lock here would be.
+     *
+     * Explicitly NOT a seqlock — see the note at the top of this file. The
+     * audio ISR preempts main and never the reverse, so a spinning reader on
+     * the control thread deadlocks the module. */
+    t.low        = anl_.low;
+    t.mid        = anl_.mid;
+    t.high       = anl_.high;
+    t.broad      = anl_.broad;
+    t.comp_gr_db = CompGainReductionDb();
+    t.lim_gr_db  = LimGainReductionDb();
+}
+
 void Process(daisy::AudioHandle::InputBuffer  in,
              daisy::AudioHandle::OutputBuffer out,
              size_t                           n)
@@ -332,6 +372,12 @@ void Process(daisy::AudioHandle::InputBuffer  in,
         // anything that scaled it afterwards would defeat it.
         l += dith_[0].Sample();
         r += dith_[1].Sample();
+
+        // Analysis taps the finished output, after the ceiling — so the band
+        // envelopes describe what actually left the module, and the CV a patch
+        // is following matches what it is hearing. Self-gating; costs one
+        // predictable branch per sample when the mode is not selected.
+        anl_.ProcessSample(l, r);
 
         out[0][i] = l;
         out[1][i] = r;
