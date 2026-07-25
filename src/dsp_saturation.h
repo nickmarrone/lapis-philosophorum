@@ -48,11 +48,49 @@
  * 62.5 times a second, measured at 31-35 dB below program. Keeping one shaper
  * family removes the failure mode rather than guarding it.
  *
- * Gain compensation divides by the same knee*drive that multiplied the input,
- * so small-signal gain is exactly unity at every drive setting and every
- * character. Drive changes how hard the tape is hit, not how loud the module is.
- * That holds while the knob is MOVING as well, which takes one deliberate
- * choice rather than none — see the note over inv_drive_ in ProcessSample.
+ * Gain compensation divides by the CHORD from the origin to a reference level,
+ * not by the slope at the origin. That distinction is the whole difference
+ * between a Drive knob you can hear and one you cannot.
+ *
+ * Dividing by the same knee*drive that multiplied the input makes small-signal
+ * gain exactly unity — but small signals are not what sets loudness. The
+ * audible level of program material is set by the curve's LARGE-signal gain,
+ * which collapses as drive rises because tanh flattens. Measured through the
+ * whole chain, drive 0 -> 24 dB cost 11.3 dB of output RMS on a mix-like
+ * program (20 dB on the Saturated character with emphasis up), the output peak
+ * fell 22 dB, and the limiter stopped engaging entirely. The harmonics were
+ * all there — 17 % THD at -18 dBFS — and inaudible under a level drop of the
+ * same size, because an unmatched A/B is decided by loudness before timbre.
+ * The knob read as a volume control that also dulled the top end.
+ *
+ * So the divisor is the gain the shaper applies to a sine at kRefAmp:
+ *
+ *   comp = ref_chord_ / tanh(drive * kRefAmp),  ref_chord_ = tanh(knee*a)/knee
+ *
+ * which makes gain at the reference level CONSTANT across the whole drive
+ * range, per character. Turning drive up now trades peaks for harmonics at
+ * matched loudness, which is what tape does — a machine is calibrated to a
+ * reference fluxivity, and printing hotter buys compression and harmonics at
+ * the same playback level, not a quieter tape.
+ *
+ * Two properties are deliberately preserved by the ref_chord_ normalisation:
+ *
+ *   - At drive 0 the stage is still EXACTLY transparent at small signal
+ *     (drive_ = knee there, so the ratio is 1 by construction). The claim that
+ *     the stage disappears when it is not driven is load-bearing for the
+ *     emphasis-pair argument above, and it survives intact.
+ *   - Harmonic levels RELATIVE to the fundamental are untouched, since a post
+ *     gain cannot change a ratio. This changes how loud the stage is, not what
+ *     it makes.
+ *
+ * What it costs, stated plainly: small-signal gain is no longer unity away from
+ * drive 0. It rises to +9.7 dB at full drive on 15 ips (+7.9 on 30 ips, +12.5
+ * on Saturated), which lifts the noise floor and quiet passages with the drive.
+ * That is not a defect of the scheme — it IS tape compression, quiet material
+ * rising relative to loud — but it is the reason Drive is no longer free.
+ *
+ * All of this holds while the knob is MOVING as well, which takes one
+ * deliberate choice rather than none — see the note over comp_ in ProcessSample.
  */
 
 #pragma once
@@ -86,6 +124,26 @@ constexpr SatCharConst kSatChars[3] = {
     { 1500.f, 12.f, 35.f, 3.0f, 1.6f, 1.4f },   // Saturated — early knee, audible
 };
 
+/**
+ * Reference amplitude the playback side is calibrated to — the level at which
+ * the stage's gain is held constant across the drive range. 0.195 is -14.2 dBFS
+ * peak, i.e. a sine at -17.2 dBFS RMS.
+ *
+ * It reads low for a "program level" because the quantity it stands in for is
+ * not a sine's RMS. The target was a match on real program: the makeup that
+ * holds output RMS constant for noise at -12 dBFS RMS, which saturates on its
+ * peaks rather than at its average and so needs a smaller reference chord than
+ * its RMS suggests. Fitting this one-parameter chord against that
+ * quadrature-computed target over 0-24 dB of drive and all three knees lands at
+ * 0.195, tracking it to within 0.33 dB everywhere. 0.19 and 0.20 are 0.47 and
+ * 0.54 dB, so this is a genuine optimum rather than a round number.
+ *
+ * Raising it makes Drive louder-than-neutral on quiet material and lifts the
+ * noise floor further; lowering it walks back toward the origin-referenced
+ * compensation that made the knob inaudible.
+ */
+constexpr float kSatRefAmp = 0.195f;
+
 struct Saturator {
     /** Published coefficient set. Only the emphasis shelf is stored; the
      *  de-emphasis is derived from it per block so the pair is an exact inverse
@@ -107,6 +165,13 @@ struct Saturator {
         dc_r_       = 1.f - (2.f * 3.14159265f * 5.f) / fs;
         param_ease_ = MsToCoef(5.f,  fs);
         asym_ease_  = MsToCoef(30.f, fs);   // see ProcessSample
+
+        // Seed the compensation for the default character, and force the first
+        // sample to derive comp_ from it. Configure() sets ref_chord_ before its
+        // own dirty check, so this only covers audio running before any
+        // Configure at all — where a zero chord would be silence, not a glitch.
+        ref_chord_  = tanhf(kSatChars[0].knee * kSatRefAmp) / kSatChars[0].knee;
+        comp_drive_ = comp_ref_ = -1.f;
 
         // Force the next Configure() to publish. Init() is reachable from
         // Configure() on a sample-rate change, and without this the dirty check
@@ -136,6 +201,17 @@ struct Saturator {
 
         const float drive_lin = DbToLin(Clampf(p.drive_db, 0.f, 24.f));
         t_drive_    = k.knee * drive_lin;
+        // The reference chord's numerator, normalised so that drive 0 dB —
+        // where drive_ equals knee — leaves gain at exactly unity. This is the
+        // only per-character term in the compensation, and it is why zero-drive
+        // transparency survives the change of reference level.
+        //
+        // It is NOT eased, and it is the one quantity here that steps. Across
+        // the three knees it only spans 0.1902 to 0.1934 — a 0.14 dB step, and
+        // only when B3 changes the machine, which changes the knee, the
+        // emphasis curve and the bump in the same instant. Easing it would mean
+        // easing it independently of drive_, which is invariant 18's trap.
+        ref_chord_  = tanhf(k.knee * kSatRefAmp) / k.knee;
         // Bypass is not a branch — it is a mix target of zero. The audio side
         // eases mix at 5 ms, so toggling bypass crossfades to the delayed dry
         // instead of stepping to it. A hard switch would step by however much
@@ -234,19 +310,30 @@ struct Saturator {
     {
         // Shared eased scalars — computed once, used by both channels.
         //
-        // inv_drive_ is DERIVED from drive_, never eased alongside it. Easing
-        // the two independently is the natural-looking version and it breaks
-        // the stage's central claim: the compensation only cancels the drive
-        // when their product is 1, and two one-poles converging to D and 1/D
-        // from a common start do not keep that product at 1 on the way. A step
-        // from 0 to 24 dB of drive put the midpoint at 8.42 * 0.53 = 4.5,
-        // i.e. **+13 dB of small-signal gain** for the length of the ease —
-        // measured at +12.5 dB through the whole chain, which is a level jump
-        // on a knob whose entire point is that it does not change level. One
-        // divide per sample (~14 cycles on the M7) buys an exact identity.
-        drive_    += param_ease_ * (t_drive_ - drive_);
-        inv_drive_ = 1.f / drive_;          // drive_ >= knee_min = 0.8, never 0
-        mix_      += param_ease_ * (t_mix_  - mix_);
+        // comp_ is DERIVED from drive_, never eased alongside it. Easing the two
+        // independently is the natural-looking version and it breaks the stage's
+        // central claim: the compensation only tracks the drive when it is the
+        // exact function of whatever drive_ currently is, and two one-poles
+        // converging to D and to comp(D) from a common start do not stay on that
+        // curve on the way. When this was a reciprocal pair, a step from 0 to
+        // 24 dB of drive put the midpoint at a product of 8.42 * 0.53 = 4.5,
+        // i.e. **+13 dB of gain** for the length of the ease — measured at
+        // +12.5 dB through the whole chain. The reference chord has the same
+        // trap with the same shape, so it gets the same treatment.
+        //
+        // The dirty check is what makes that affordable. Evaluating the chord
+        // needs a tanhf, which is far more than the divide it replaced, but
+        // drive_ converges to t_drive_ bit-exactly and then stops moving, so in
+        // the steady state — everything except an actual knob move — this costs
+        // one compare per sample and the transcendental is never reached.
+        drive_ += param_ease_ * (t_drive_ - drive_);
+        if (drive_ != comp_drive_ || ref_chord_ != comp_ref_) {
+            comp_drive_ = drive_;
+            comp_ref_   = ref_chord_;
+            // drive_ >= knee_min = 0.8, so the tanh argument is never 0.
+            comp_       = ref_chord_ / tanhf(drive_ * kSatRefAmp);
+        }
+        mix_ += param_ease_ * (t_mix_ - mix_);
 
         // The offset pair gets its own, slower ease, and that is not cosmetic
         // either. asym_ is added at the shaper's input while asym_sh_ is
@@ -276,9 +363,10 @@ struct Saturator {
         const float s1 = Shape(u1 + asym_, ch);
         float w = down_[ch].Process(s0, s1);
 
-        // Undo the drive so the stage is unity at small signal, and remove the
-        // shaper's response to the offset alone.
-        w = (w - asym_sh_) * inv_drive_;
+        // Compensate the drive so the stage is unity at the reference level, and
+        // remove the shaper's response to the offset alone. The subtraction is
+        // in the shaper's output domain, so it has to happen before the scale.
+        w = (w - asym_sh_) * comp_;
 
         // Block what the nonlinearity made of the offset before it reaches the
         // filters. The static subtraction above handles the steady state; this
@@ -331,7 +419,15 @@ struct Saturator {
 
     float t_drive_ = 1.f, t_mix_ = 1.f;
     float t_asym_ = 0.f, t_asym_sh_ = 0.f;
-    float drive_ = 1.f, inv_drive_ = 1.f, mix_ = 1.f, asym_ = 0.f, asym_sh_ = 0.f;
+    float drive_ = 1.f, mix_ = 1.f, asym_ = 0.f, asym_sh_ = 0.f;
+
+    // Reference-chord compensation and its cache. ref_chord_ is published by
+    // Configure; comp_ is the derived scale; comp_drive_/comp_ref_ are the
+    // inputs comp_ was last computed from. Seeded to -1 so the first sample
+    // always recomputes, whatever Configure has or has not run.
+    float ref_chord_  = 0.f;
+    float comp_       = 1.f;
+    float comp_drive_ = -1.f, comp_ref_ = -1.f;
     float param_ease_ = 0.01f, asym_ease_ = 0.002f, dc_r_ = 0.999f;
 
     HalfBandUp   up_[2];

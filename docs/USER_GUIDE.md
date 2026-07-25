@@ -214,10 +214,26 @@ emphasises higher and later and puts a small bump at 50 Hz; Saturated
 emphasises lower and harder and puts a bigger bump at 35 Hz, the way
 slower tape actually behaves.
 
-**Drive does not change level.** The stage divides out exactly what it
-multiplied in, so small signals come through at unity at every drive
-setting. Turning drive up changes *tone*, not loudness — which is what
-makes it usable at the end of a chain and makes the bypass A/B honest.
+**Drive does not change level.** The playback side is calibrated to a
+reference level, the way a real machine is calibrated to a reference
+fluxivity, so a program at a working level comes out at the same loudness
+wherever Drive is set — within about 2.5 dB over the knob's whole travel,
+against 12 dB before this was fixed. Turning drive up changes *tone*, not
+loudness, which is what makes it usable at the end of a chain and makes
+the bypass A/B honest.
+
+Two consequences worth knowing:
+
+- **Quiet material comes up.** Holding program level constant while the
+  curve compresses means the makeup is a boost at small signal — up to
+  about 10 dB at full drive on 15 ips, 12 dB on Saturated. That is tape
+  compression, and it lifts hiss and room tone along with everything
+  else. At Drive 0 the stage is exactly transparent, so there is no
+  penalty for leaving it off.
+- **Emphasis costs a little level of its own.** The makeup follows Drive
+  only, and emphasis makes the highs saturate harder on top of it, so
+  Saturated with Emphasis wide open still loses a few dB across the drive
+  range. Trim it back with the output Trim on page 4 if you are A/Bing.
 
 **Emphasis is the knob that makes it tape.** The record side lifts the
 high end before the saturator and the playback side takes exactly the

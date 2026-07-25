@@ -251,30 +251,129 @@ void TestEmphasisInverts(Report& r)
 /* ── 3. Unity at rest ────────────────────────────────────────────────────── */
 
 /**
- * Two separate promises. Small-signal gain is unity at every drive setting
- * (that is the gain compensation, and it is what makes the Drive knob honest to
- * A/B). And with drive at zero the stage is transparent regardless of Emphasis.
+ * Three separate promises, and the first one is the stage's whole reason to be
+ * audible.
+ *
+ * The compensation divides by the CHORD to kSatRefAmp, not by the slope at the
+ * origin, so what is held constant across the drive range is the gain at the
+ * REFERENCE LEVEL — not the small-signal gain. That is the difference between
+ * a Drive knob that trades peaks for harmonics and one that trades them for
+ * silence: measured through the whole chain, origin-referenced compensation
+ * cost 11.3 dB of output RMS over the drive range and dropped the peak 22 dB,
+ * which is what made 17 % THD inaudible.
+ *
+ * Second, drive at zero is still EXACTLY transparent — the reference chord is
+ * normalised per character so that it is, and the emphasis-pair argument
+ * depends on it.
+ *
+ * Third, the low end stays put at zero drive regardless of Emphasis.
  */
 void TestUnityGain(Report& r)
 {
-    r.Section("Gain compensation — Drive changes tone, not level");
+    r.Section("Gain compensation — Drive trades peaks for harmonics, not level");
 
+    /*
+     * The contract, measured the way a listener meets it: output RMS on a
+     * program, across the whole drive range.
+     *
+     * Not the gain at kSatRefAmp, which is what the compensation literally
+     * holds constant — that is the INSTANTANEOUS transfer at one amplitude, and
+     * a sine's fundamental is compressed by a different amount than its peak
+     * chord, so measuring it would report a 1.7 dB spread and prove nothing
+     * about either quantity. The reference chord is a one-parameter stand-in for
+     * a program-level match (see kSatRefAmp); the match is the claim, so the
+     * match is what gets asserted.
+     *
+     * The band is 3.5 dB across two working levels 6 dB apart. It cannot be
+     * tighter with a static makeup: the curve is compressive, so a scheme
+     * matched at one level necessarily runs hot at lower ones and shy at higher.
+     * That residual IS the tape compression the scheme buys.
+     */
     for (uint8_t ch = 0; ch < 3; ch++)
     {
-        double worst = 0.0, worst_d = 0.0;
-        for (double d : {0., 6., 12., 18., 24.})
+        const int N = 16384;
+        double worst = 0.0, worst_d = 0.0, worst_old = 0.0;
+        for (double lvl : {-18., -12.})
+        {
+            const double amp = std::pow(10.0, lvl / 20.0) * std::sqrt(3.0);
+            double ref = 0.0, ref_old = 0.0;
+            for (double d : {0., 6., 12., 18., 24.})
+            {
+                auto p = MakeParams();
+                p.character = ch;
+                p.drive_db  = float(d);
+                Rig rig(p);
+                const auto in = Noise(amp, N);
+                std::vector<float> out(static_cast<size_t>(N));
+                rig.Run(in.data(), out.data(), N);
+                const double rms = RmsDb(out, 4000);
+
+                // NEGATIVE CONTROL, reconstructed rather than rebuilt: the old
+                // compensation differs from this one by the known scalar
+                // comp*drive, so dividing it out recovers what the previous
+                // build produced, sample for sample.
+                const double knee  = double(mastering_dsp::kSatChars[ch].knee);
+                const double drive = knee * std::pow(10.0, d / 20.0);
+                const double chord = std::tanh(knee * double(mastering_dsp::kSatRefAmp)) / knee;
+                const double comp  = chord / std::tanh(drive * double(mastering_dsp::kSatRefAmp));
+                const double old   = rms - 20.0 * std::log10(comp * drive);
+
+                if (d == 0.) { ref = rms; ref_old = old; }
+                if (std::fabs(rms - ref) > std::fabs(worst))
+                {
+                    worst   = rms - ref;
+                    worst_d = d;
+                }
+                worst_old = std::min(worst_old, old - ref_old);
+            }
+        }
+        r.Check(std::fabs(worst) < 3.5,
+                std::string(CharName(ch)) + ": program level holds across the drive range",
+                Fmt("worst %+.2f dB at drive %.0f dB", worst, worst_d));
+        r.Check(worst_old < -6.0,
+                std::string(CharName(ch))
+                    + ": negative control — origin-referenced compensation IS rejected",
+                Fmt("it collapses %.2f dB over the same range", worst_old));
+    }
+
+    // Zero drive is exactly transparent, per character. This one IS 0.05 dB.
+    {
+        double worst = 0.0;
+        uint8_t worst_ch = 0;
+        for (uint8_t ch = 0; ch < 3; ch++)
         {
             auto p = MakeParams();
             p.character = ch;
-            p.drive_db  = float(d);
+            p.drive_db  = 0.f;
             // -60 dBFS: far enough down the tanh that the curve is linear.
             const double g = GainDb(p, 1000.0, 0.001);
-            if (std::fabs(g) > std::fabs(worst)) { worst = g; worst_d = d; }
+            if (std::fabs(g) > std::fabs(worst)) { worst = g; worst_ch = ch; }
         }
-        r.Check(std::fabs(worst) < 0.05,
-                std::string(CharName(ch)) + ": small-signal gain is unity",
-                Fmt("worst %+.4f dB at drive %.0f dB", worst, worst_d));
+        r.Check(std::fabs(worst) < 0.05, "at zero drive the stage is transparent",
+                Fmt("worst %+.4f dB", worst) + std::string(", on ") + CharName(worst_ch));
     }
+
+    // What the compensation costs, on the record rather than implied: away from
+    // zero drive the small-signal gain is a boost, and it rises with the knee.
+    // This is tape compression — quiet material coming up relative to loud —
+    // and it lifts the noise floor with the drive.
+    {
+        auto p = MakeParams();
+        p.drive_db = 24.f;
+        double g[3];
+        for (uint8_t ch = 0; ch < 3; ch++)
+        {
+            p.character = ch;
+            g[ch] = GainDb(p, 1000.0, 0.001);
+        }
+        r.Info("small-signal gain at full drive (the noise-floor cost)",
+               Fmt("30ips %+.2f dB, 15ips %+.2f dB", g[0], g[1])
+                   + Fmt(", sat %+.2f dB", g[2]));
+        r.Check(g[0] < g[1] && g[1] < g[2],
+                "and it orders by knee, as the characters' compression does",
+                "30ips < 15ips < Saturated");
+    }
+
 
     // Below 2 kHz the stage must be flat at zero drive whatever Emphasis says,
     // because the emphasis pair reconstructs exactly.
@@ -519,7 +618,9 @@ void TestFrequencyDependence(Report& r)
         const auto in = Sine(f, 0.25, N);
         std::vector<float> out(static_cast<size_t>(N));
         rig.Run(in.data(), out.data(), N);
-        // Compression of the fundamental relative to the small-signal gain.
+        // Gain of the fundamental. Only DIFFERENCES between these matter here —
+        // the absolute figure carries the reference-chord makeup, which is
+        // common to both frequencies and so cancels in every check below.
         return 20.0 * std::log10(BinAmp(out, f, 4000) / 0.25);
     };
 
