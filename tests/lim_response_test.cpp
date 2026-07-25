@@ -162,15 +162,58 @@ int main()
                   Fmt("measured %.1f ms", meas_ms));
     }
 
-    /* ── 7. Window sizing holds for the declared inequality ──────────────── */
+    /* ── 7. True peak — the ceiling is dBTP, not dBFS ────────────────────── */
+    rep.Section("True peak");
+    for (float ceil_db : {-0.1f, -1.f, -6.f})
+    {
+        Limiter lim = MakeLimiter(ceil_db, 100.f);
+        TruePeakMeter m;
+        for (int n = 0; n < 192000; n++)
+        {
+            float s = IspSample(n), l = s, r = s;
+            lim.ProcessSample(l, r);
+            if (n >= 4000) m.Push(l);
+        }
+        const double tp = 20.0 * std::log10(m.peak + 1e-30);
+        // 0.05 dB of slack is the half-band's own passband ripple plus the
+        // rolloff at 19 kHz, not limiter headroom. A sample-peak detector
+        // measured +1.40 dB over the ceiling on this program.
+        rep.Check(tp <= ceil_db + 0.05,
+                  Fmt("ceiling %.1f dB holds as dBTP on HF-dense program", ceil_db),
+                  Fmt("%+.2f dBTP (%+.2f dB over ceiling)", tp, tp - ceil_db));
+    }
+
+    /* ── 8. The detector's group delay is what the sizing assumes ────────── */
     rep.Section("Window sizing");
     {
-        // B <= D - Td + 1 <= A, with Td = 0 for a sample-peak detector.
-        const int D = kLookahead, Td = 0, A = kGainWin, B = kGainWin;
-        rep.Check(B <= D - Td + 1 && D - Td + 1 <= A,
-                  "B <= D - Td + 1 <= A",
-                  Fmt("%.0f <= ", (double)B) + Fmt("%.0f <= ", (double)(D - Td + 1))
-                      + Fmt("%.0f", (double)A));
+        // Measure Td rather than trusting the algebra: feed an impulse, find
+        // which iteration the 4x detector reports its largest magnitude at.
+        TruePeak4x tp;
+        int        at   = 0;
+        float      best = 0.f;
+        for (int n = 0; n < 200; n++)
+        {
+            const float v = tp.Process(n == 50 ? 1.f : 0.f);
+            if (v > best) { best = v; at = n; }
+        }
+        const double td = at - 50;
+        rep.Check(td * 4 >= kTpDelayMinQ && td * 4 <= kTpDelayMaxQ,
+                  "measured detector delay is inside [Td_min, Td_max]",
+                  Fmt("%.2f samples, declared [%.2f", td, kTpDelayMinQ / 4.0)
+                      + Fmt(", %.2f]", kTpDelayMaxQ / 4.0));
+    }
+    {
+        // B <= D - Td + 1 <= A, checked in quarter-samples against both ends of
+        // the detector's delay range. Mirrors the static_asserts in the header.
+        const int D = kLookahead;
+        rep.Check(4 * kHoldWin >= 4 * D - kTpDelayMinQ + 4,
+                  "A >= D - Td_min + 1 (peak hold outlasts the delay line)",
+                  Fmt("%.0f >= ", (double)(4 * kHoldWin))
+                      + Fmt("%.0f (quarter-samples)", (double)(4 * D - kTpDelayMinQ + 4)));
+        rep.Check(4 * kRampWin <= 4 * D - kTpDelayMaxQ + 4,
+                  "B <= D - Td_max + 1 (ramp has settled on arrival)",
+                  Fmt("%.0f <= ", (double)(4 * kRampWin))
+                      + Fmt("%.0f (quarter-samples)", (double)(4 * D - kTpDelayMaxQ + 4)));
     }
 
     return rep.Finish();

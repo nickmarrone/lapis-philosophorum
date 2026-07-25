@@ -614,8 +614,8 @@ the table and documents why N = 31 rather than 35: N must be ≡ 3 (mod 4)
 for a half-band, and N = 35 would cost 17 base samples against the 16
 available.
 
-**Limiter** (`dsp_limiter.h`) — brickwall with **`kLookahead` = 48 samples
-(1 ms at 48 kHz)** of lookahead, instantaneous attack, exponential release:
+**Limiter** (`dsp_limiter.h`) — brickwall with **`kLookahead` = 60 samples
+(1.25 ms at 48 kHz)** of lookahead, instantaneous attack, exponential release:
 
 ```cpp
 buf_l[write] = l;                       // audio into a circular delay line
@@ -663,10 +663,41 @@ exactly when
 B <= D - Td + 1 <= A
 ```
 
-`A = B = kGainWin = kLookahead + 1` satisfies it with equality on both
-sides. The harness asserts the resulting overshoot is 0.000 dB across
-noise, impulse trains, square waves, dense mixes and level steps at every
-ceiling — see `tests/lim_response_test.cpp`.
+The harness asserts the resulting overshoot is 0.00000 dB across noise,
+impulse trains, square waves, dense mixes and level steps at every ceiling
+— see `tests/lim_response_test.cpp`.
+
+**The ceiling is a true-peak (dBTP) ceiling.** The detector runs 4x
+oversampled through two cascaded `HalfBandUp` stages, so it sees the
+inter-sample peaks the DAC's reconstruction filter — or a lossy encoder
+downstream — will actually produce. A sample-peak limiter guarantees
+nothing about those: measured on HF-dense program, this chain set to
+−1.0 dBFS emitted **+0.40 dBTP**, 1.4 dB over its own ceiling. It now
+emits −1.00 dBTP.
+
+Two consequences that are easy to get wrong:
+
+- **Both outputs of the first stage go through the *same* second-stage
+  instance**, in time order. Giving the even and odd phases their own
+  filter instance looks natural and is wrong — each would then see a
+  stream decimated by two, which is not a 4x interpolation of anything.
+- **`Td` is a range, not a number.** The four interpolated positions
+  emitted in one call stand at base times `n−11.25`, `n−11.00`, `n−10.75`
+  and `n−10.50`, so `A` must be sized against the earliest and `B` against
+  the latest. `kTpDelay{Min,Max}Q` hold those bounds in quarter-samples,
+  the coarsest grid all four land on, and the `static_assert`s in the
+  header check the inequality at both ends. The harness measures the delay
+  with an impulse rather than trusting the algebra.
+
+The raw sample delayed by 11 is folded into the peak alongside the
+interpolated set. The half-band rolls off 0.46 dB by 20 kHz, so on
+near-Nyquist content the interpolated values can read *below* the true
+sample peak; taking the max makes the detector never worse than the
+sample-peak one it replaced. Base time `n−11` is inside the range above,
+so it needs no separate sizing.
+
+`kLookahead` is 60 rather than 48 to absorb the detector's delay without
+shrinking the ramp window — see §8 for why the chain budget moved instead.
 
 The post-gain `Clampf` to `±ceiling_lin` is now genuinely belt-and-braces:
 it is there for float rounding, and the harness asserts it never has
@@ -928,23 +959,36 @@ Things that will bite quietly if broken:
 
 ## 8. Latency budget
 
-**Chain latency today is 63 samples (1.31 ms)** — 48 for the limiter's
+**Chain latency today is 75 samples (1.56 ms)** — 60 for the limiter's
 lookahead and 15 for the saturator's half-band pair.
 `comp_control_test`'s `TestChainLatency` measures it end to end rather than
 asserting it from prose — this section has gone stale once already, and now
 something fails when it does.
 
-For the chain as a whole, **64 samples (~1.3 ms) is the ceiling** any stage
-may claim, so **1 sample remains**: the budget is spent. There is no delay
-compensation in a Eurorack rack, so the limit is perceptual rather than
-arithmetic; at the end of a mastering chain nothing downstream recombines,
-so comb filtering is not the binding constraint.
+For the chain as a whole, **80 samples (~1.67 ms) is the ceiling** any stage
+may claim, so **5 samples remain**. There is no delay compensation in a
+Eurorack rack, so the limit is perceptual rather than arithmetic; at the end
+of a mastering chain nothing downstream recombines, so comb filtering is not
+the binding constraint. The binding case is someone monitoring live through
+the module, where the commonly cited transparency threshold is around 2 ms —
+which is what 80 samples is chosen to stay under, with margin.
+
+**This ceiling was 64 samples until the limiter went true-peak, and it moved
+deliberately.** The 4x detector carries ~11 samples of group delay, so
+holding the old number meant shrinking the gain-ramp window to match and
+giving up most of the 1 ms of ramp time that keeps limiting from sounding
+like clipping. Raising the ceiling by 16 samples was the cheaper side of
+that trade: 63 → 75 samples is 0.25 ms, and neither number is close to
+audible in this application. The old 64 was a self-imposed round number
+with one sample spare, not a constraint anything downstream imposes — worth
+saying plainly, because "the budget is spent" reads like a hard limit and it
+never was one.
 
 Anything that wants latency from here has to take it from an existing
-stage. The realistic trade is the half-band filter: N = 31 costs 15 base
-samples and is what the 16 available bought. Going to N = 35 for a steeper
-transition would cost 17 and does not fit; going *down* is where slack
-would come from, at the price of alias rejection.
+stage, or move the ceiling again with an argument like the one above. The
+realistic trade is the half-band filter: N = 31 costs 15 base samples.
+Going to N = 35 for a steeper transition would cost 17; going *down* is
+where slack would come from, at the price of alias rejection.
 
 Two stages must never spend any of it:
 

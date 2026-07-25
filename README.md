@@ -39,7 +39,7 @@ template. Presets and settings are kept from the template; **param lock
 and CV routing have been removed** — every knob is a direct, unlatched
 control.
 
-Total latency is 63 samples (1.3 ms) — 48 for the limiter's lookahead, 15
+Total latency is 75 samples (1.56 ms) — 60 for the limiter's lookahead, 15
 for the tape stage's half-band filters — and is constant regardless of
 bypass state.
 

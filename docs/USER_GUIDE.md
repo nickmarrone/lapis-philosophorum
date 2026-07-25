@@ -282,7 +282,7 @@ release settings are transparent on dense material but will pump audibly on
 sparse, transient-heavy material — slow the release down if you hear it
 breathing.
 
-The module's total latency is **63 samples, 1.3 ms** — 48 for the
+The module's total latency is **75 samples, 1.56 ms** — 60 for the
 limiter's lookahead and 15 for the tape stage's oversampling filters. It
 is constant, and it is there whether or not either stage is doing
 anything or is bypassed.
@@ -430,9 +430,9 @@ survives reflashes.
 | Compressor | Feed-forward, log-domain, 1:1–20:1, three characters, sidechain HPF, parallel mix |
 | Tape | Emphasis/de-emphasis pair, tanh knee, 3 machines, ±0.3 asymmetry, head bump, dry/wet mix, DC-blocked |
 | Tape anti-aliasing | 2× oversampled (31-tap half-band) plus first-order ADAA; aliases ≥58 dB down at full drive |
-| Limiter | Brickwall, 1 ms lookahead, exponential release |
+| Limiter | Brickwall true-peak, 1.25 ms lookahead, exponential release |
 | Dither | TPDF, 0–2 LSB @ 24-bit |
-| Latency | 63 samples (1.3 ms) — 48 limiter, 15 tape; constant |
+| Latency | 75 samples (1.56 ms) — 60 limiter, 15 tape; constant |
 | Presets | 16 slots, flash, wear-levelled |
 | Control rate | ~60 Hz frames, 1 ms button polling |
 

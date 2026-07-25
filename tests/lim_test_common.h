@@ -173,6 +173,50 @@ inline double OutputPeakDb(mastering_dsp::Limiter& lim, int prog, int samples, i
     return 20.0 * std::log10(pk + 1e-30);
 }
 
+/**
+ * 4x true-peak meter for the limiter's *output*.
+ *
+ * Deliberately built from the same TruePeak4x the DSP uses. That makes this a
+ * measurement of the limiter, not of the interpolator — if the half-band were
+ * wrong, a meter built on a different filter would disagree and the test would
+ * blame the limiter. `sat_response_test` already asserts the half-band's
+ * stopband and round-trip against tools/halfband_design.py, so its correctness
+ * is established elsewhere and can be leaned on here.
+ *
+ * The consequence worth stating: this cannot detect an error *common* to the
+ * detector and the meter. It is a check that the limiter uses its detector
+ * correctly, not an independent audit of BS.1770 conformance.
+ */
+struct TruePeakMeter {
+    mastering_dsp::TruePeak4x tp;
+    double                    peak = 0.0;
+    void Push(float x) { peak = std::fmax(peak, tp.Process(x)); }
+};
+
+/** Highest true peak the limiter emits on a program, in dBTP. */
+inline double OutputTruePeakDb(mastering_dsp::Limiter& lim, int prog, int samples, int skip = 4000)
+{
+    Lcg           rng;
+    TruePeakMeter m;
+    for (int n = 0; n < samples; n++)
+    {
+        const float s = ProgramSample(prog, n, rng);
+        float       l = s, r = s;
+        lim.ProcessSample(l, r);
+        if (n >= skip) m.Push(l);
+    }
+    return 20.0 * std::log10(m.peak + 1e-30);
+}
+
+/** HF-dense program — the case that separates sample peak from true peak. */
+inline float IspSample(int n)
+{
+    const double t = (double)n / kFs;
+    return (float)(1.8 * (0.6 * std::sin(2 * kPi * 11000 * t)
+                          + 0.6 * std::sin(2 * kPi * 13700 * t + 0.7)
+                          + 0.5 * std::sin(2 * kPi * 19000 * t + 2.1)));
+}
+
 inline mastering_dsp::Limiter MakeLimiter(float ceiling_db, float release_ms, bool byp = false)
 {
     mastering_dsp::Limiter l;

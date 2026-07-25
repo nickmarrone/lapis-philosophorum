@@ -29,7 +29,8 @@ CP_COMMON := comp_test_common.h $(COMMON) ../src/dsp_compressor.h \
              ../src/dsp_common.h ../src/mastering_dsp.h
 SAT_COMMON := sat_test_common.h $(COMMON) ../src/dsp_saturation.h \
              ../src/dsp_halfband.h ../src/dsp_common.h ../src/mastering_dsp.h
-LIM_COMMON := lim_test_common.h $(REPORT) ../src/dsp_limiter.h ../src/dsp_common.h
+LIM_COMMON := lim_test_common.h $(REPORT) ../src/dsp_limiter.h ../src/dsp_common.h \
+              ../src/dsp_halfband.h
 DSP_SRC   := ../src/mastering_dsp.cpp
 DSP_HDRS  := ../src/mastering_dsp.h ../src/dsp_common.h ../src/dsp_compressor.h \
              ../src/dsp_limiter.h ../src/dsp_saturation.h ../src/dsp_dither.h \
