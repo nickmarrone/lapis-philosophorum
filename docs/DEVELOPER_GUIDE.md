@@ -615,28 +615,65 @@ for a half-band, and N = 35 would cost 17 base samples against the 16
 available.
 
 **Limiter** (`dsp_limiter.h`) — brickwall with **`kLookahead` = 48 samples
-(1 ms at 48 kHz)** of lookahead, fast one-pole attack, exponential release:
+(1 ms at 48 kHz)** of lookahead, instantaneous attack, exponential release:
 
 ```cpp
 buf_l[write] = l;                       // audio into a circular delay line
 gd = (peak > ceiling) ? ceiling / peak : 1.f;    // detect on the PRE-delay input
-if (gd < gain) gain += atk_coef * (gd - gain);   // ramp down ahead of the peak
-else           gain += rel_coef * (gd - gain);   // smooth recovery
+if (gd < rel) rel = gd;                          // instant attack on the TARGET
+else          rel += rel_coef * (gd - rel);      // smooth recovery
+gain = box.Process(rmin.Process(rel));  // peak hold, then linear ramp
 l = buf_l[rd] * gain;                   // apply to the delayed audio
 ```
 
 Detection runs on the current input, which is `kLookahead` samples *ahead*
-of what is being output, so the gain is already down by the time the peak
-arrives. `atk_coef` is sized as five time constants across the lookahead
-(`1 − exp(−5/kLookahead)`), which settles to within ~1 % in exactly the
-window available. Transient limiting is therefore gain riding rather than
-nonlinear distortion.
+of what is being output, so there is a full window in which to get the gain
+down before the peak arrives.
 
-The post-gain `Clampf` to `±ceiling_lin` is a belt-and-braces guard for
-that residual ~1 %, not the primary mechanism.
+**The attack must not be a one-pole, and this is the subtle part.** A
+one-pole only converges while its target is *held*. A transient shorter
+than the window sets `gd` low for a sample or two and then lets it snap
+back to 1.0, so the gain barely moves and the peak arrives at full height.
+The chain shipped that way until the limiter review; measured overshoot
+into the safety clamp was **+12.35 dB on an isolated one-sample transient
+and +3 to +8 dB on ordinary program with stabs** — the limiter was a hard
+clipper for exactly the signals lookahead exists to catch. Steady-state
+content was unaffected, which is why it hid.
 
-`Configure()` deliberately does not reset `gain` or `write` — that would
-pop on a live parameter change.
+Two stages on the gain signal replace it:
+
+- **`RunMin`** — running minimum over `kGainWin` samples. This is the peak
+  *hold*: a peak keeps the target down for the whole window instead of for
+  one sample. O(1) worst case (van Herk / Gil-Werman), so there is no
+  data-dependent inner loop in the ISR.
+- **`BoxCar`** — moving average over `kGainWin`. Turns `RunMin`'s step into
+  a linear ramp, and unlike a one-pole it settles *exactly* rather than
+  asymptotically. Its accumulator is `double` because an
+  add-one/subtract-one running sum has nothing to pull it back from a
+  float random walk over long uptimes.
+
+Zero overshoot is then a property of the window sizing, not a lucky
+measurement. With audio delay `D`, running-min window `A`, boxcar window
+`B` and detector group delay `Td`, a peak at input index `p` is seen at
+`p+Td` and leaves the delay line at `p+D`; the gain applied at `p+D` is a
+mean of `B` running-minima, and every one of them is ≤ that peak's target
+exactly when
+
+```
+B <= D - Td + 1 <= A
+```
+
+`A = B = kGainWin = kLookahead + 1` satisfies it with equality on both
+sides. The harness asserts the resulting overshoot is 0.000 dB across
+noise, impulse trains, square waves, dense mixes and level steps at every
+ceiling — see `tests/lim_response_test.cpp`.
+
+The post-gain `Clampf` to `±ceiling_lin` is now genuinely belt-and-braces:
+it is there for float rounding, and the harness asserts it never has
+anything to do.
+
+`Configure()` deliberately does not reset the envelope, the delay line or
+either window — that would pop on a live parameter change.
 
 **Bypass gates the gain, not the delay line.** `lim_bypass` (page 4's B2)
 makes the applied gain unity; the circular buffer and the envelope keep
