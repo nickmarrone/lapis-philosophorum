@@ -19,10 +19,10 @@
  *
  * The fix is two stages on the gain signal, neither of which is a one-pole:
  *
- *   RunMin  — running minimum over kGainWin samples. This is the peak *hold*:
+ *   RunMin  — running minimum over kHoldWin samples. This is the peak *hold*:
  *             once a peak sets the target low, the target stays low for the
  *             whole window rather than snapping back on the next sample.
- *   BoxCar  — moving average over kGainWin samples. This turns RunMin's step
+ *   BoxCar  — moving average over kRampWin samples. This turns RunMin's step
  *             into a linear ramp so the gain change is not a click, and unlike
  *             a one-pole it settles exactly rather than asymptotically.
  *
@@ -87,6 +87,15 @@ static constexpr int kLookahead = 60;
 static constexpr int kTpDelayMinQ = 42;   // 10.50 base samples
 static constexpr int kTpDelayMaxQ = 45;   // 11.25 base samples
 
+/**
+ * Delay applied to the raw sample before it joins the true-peak max, so that
+ * the sample-peak floor is contemporaneous with the interpolated set. It has to
+ * land inside the detector's own delay span or it would need sizing of its own.
+ */
+static constexpr int kTpRawDelay = 11;
+static_assert(4 * kTpRawDelay >= kTpDelayMinQ && 4 * kTpRawDelay <= kTpDelayMaxQ,
+              "raw-sample floor sits outside the detector's delay span");
+
 /** Peak-hold window (A) and gain-ramp window (B). See the inequality above. */
 static constexpr int kHoldWin = 52;
 static constexpr int kRampWin = 48;
@@ -136,14 +145,14 @@ struct TruePeak4x {
 };
 
 /**
- * Running minimum over exactly kGainWin samples, O(1) worst case per sample
- * (van Herk / Gil-Werman): the stream is cut into segments of kGainWin, the
+ * Running minimum over exactly W samples, O(1) worst case per sample
+ * (van Herk / Gil-Werman): the stream is cut into segments of W, the
  * current segment contributes a forward-running prefix minimum and the previous
  * one a precomputed suffix minimum, and the window is always one of each.
  *
  * A monotonic deque would also be O(1) amortised but has a data-dependent inner
  * loop, which is the wrong shape for an audio ISR. This costs two compares per
- * sample plus one kGainWin-long suffix pass per kGainWin samples — bounded work
+ * sample plus one W-long suffix pass per W samples — bounded work
  * with no dependence on the signal.
  *
  * 1.f is the identity for the min: every gain target is <= 1 by construction.
@@ -179,7 +188,7 @@ struct RunMin {
 };
 
 /**
- * Moving average over kGainWin samples.
+ * Moving average over W samples.
  *
  * The accumulator is double, not float. It is updated by add-one/subtract-one
  * forever, so float rounding would random-walk the running sum away from the
@@ -232,11 +241,11 @@ struct Limiter {
         // the ceiling is a true-peak one. The raw sample delayed by 11 joins the
         // max because the half-band's 0.46 dB rolloff at 20 kHz lets the
         // interpolated set read below the sample peak on near-Nyquist content;
-        // base time n-11 is inside the detector's own [n-11.25, n-10.5] span, so
-        // it rides along under the same sizing.
-        const int   d11  = (write - 11 + (kLookahead + 1)) % (kLookahead + 1);
+        // kTpRawDelay is static_asserted to sit inside the detector's own
+        // [n-11.25, n-10.5] span, so it rides along under the same sizing.
+        const int   raw  = (write - kTpRawDelay + (kLookahead + 1)) % (kLookahead + 1);
         const float peak = fmaxf(fmaxf(tp_l.Process(l), tp_r.Process(r)),
-                                 fmaxf(fabsf(buf_l[d11]), fabsf(buf_r[d11])));
+                                 fmaxf(fabsf(buf_l[raw]), fabsf(buf_r[raw])));
         const float gd   = (peak > ceiling_lin) ? ceiling_lin / peak : 1.f;
 
         // Instantaneous attack, exponential release — applied to the TARGET.

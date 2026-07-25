@@ -144,7 +144,7 @@ int main()
     for (float rel_ms : {10.f, 100.f, 500.f})
     {
         // Drive 12 dB in, then drop to silence and time the recovery to -3 dB
-        // of the way back. The boxcar adds kGainWin samples of ramp on top of
+        // of the way back. The boxcar adds kRampWin samples of ramp on top of
         // the one-pole, which at 48 kHz is 1 ms — visible at 10 ms, not at 500.
         Limiter lim = MakeLimiter(-1.f, rel_ms);
         for (int n = 0; n < 48000; n++) { float l = 4.f, r = 4.f; lim.ProcessSample(l, r); }

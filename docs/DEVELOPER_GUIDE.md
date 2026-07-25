@@ -642,11 +642,11 @@ content was unaffected, which is why it hid.
 
 Two stages on the gain signal replace it:
 
-- **`RunMin`** — running minimum over `kGainWin` samples. This is the peak
+- **`RunMin`** — running minimum over `kHoldWin` samples. This is the peak
   *hold*: a peak keeps the target down for the whole window instead of for
   one sample. O(1) worst case (van Herk / Gil-Werman), so there is no
   data-dependent inner loop in the ISR.
-- **`BoxCar`** — moving average over `kGainWin`. Turns `RunMin`'s step into
+- **`BoxCar`** — moving average over `kRampWin`. Turns `RunMin`'s step into
   a linear ramp, and unlike a one-pole it settles *exactly* rather than
   asymptotically. Its accumulator is `double` because an
   add-one/subtract-one running sum has nothing to pull it back from a
