@@ -167,11 +167,19 @@ inline Settings Extreme()
  *
  * Extreme() is not that setting and it is worth saying why, because it looks
  * like it should be: at 24 dB of drive into the Saturated character the shaper
- * asymptote caps the stage's output at 1/(knee*drive) ~ 0.045, so the chain
- * leaves 13 dB of headroom under its own ceiling and every ceiling assertion
- * passes without the limiter ever engaging. Here the drive is backed off to
+ * asymptote caps the stage's output at the reference chord, ~0.190 or
+ * -14.4 dBFS, whatever is fed to it. With +12 dB of trim behind that, Extreme()
+ * peaks at -0.91 dBFS — under the ceiling, so every ceiling assertion there
+ * still passes without the limiter engaging. Here the drive is backed off to
  * 6 dB and the gain moved into makeup and trim, so the limiter really is the
  * binding constraint and "the ceiling holds" means something.
+ *
+ * That 0.8 dB of margin used to be 13 dB, when the saturator's compensation was
+ * referenced to the origin rather than to a program level and full drive capped
+ * the stage at ~0.045. The reason for this setting existing did not change, but
+ * the margin it is avoiding is now thin enough that Extreme() is one voicing
+ * change away from limiting incidentally — which would make its ceiling
+ * assertions pass for the wrong reason.
  */
 inline Settings Loud()
 {
