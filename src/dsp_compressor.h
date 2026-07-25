@@ -338,7 +338,16 @@ struct Compressor {
         /* 7. Apply. Everything above runs even when bypassed, so the envelope
          * and the sidechain filters stay warm across a bypass toggle. */
         if (!bypass) {
-            const float g  = (y < 0.01f) ? makeup_run
+            /* The small-y path skips the expf while the envelope is at rest,
+             * which is most of the time on a glue compressor. It is the
+             * first-order expansion of exp(-ln10/20 * y) and NOT a flat 1.f,
+             * because a flat one is discontinuous: exp() at the y = 0.01
+             * handover is 0.998850, so switching to 1 steps the gain by 0.115 %
+             * — a -59 dBc click, and one that fires on every release tail,
+             * since y crosses 0.01 every time the compressor lets go. The
+             * expansion is exact at y = 0 and 6.6e-7 low at the crossover
+             * (-123 dBc, below the 24-bit LSB), for one multiply-add. */
+            const float g  = (y < 0.01f) ? makeup_run * (1.f - kDbToLn * y)
                                          : makeup_run * expf(-kDbToLn * y);
             const float wl = l * g, wr = r * g;
             // Linear crossfade, deliberately: wet is a gain-modulated copy of
