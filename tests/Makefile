@@ -5,7 +5,7 @@
 # dsp_biquad.h is <cmath>-only by invariant, and mastering_dsp.cpp needs only
 # the AudioHandle typedefs, which tests/stubs/daisy_seed.h supplies.
 #
-#   make          build and run all seven harnesses
+#   make          build and run all eight harnesses
 #   make golden   regenerate the golden CSVs (EQ coefficients + compressor)
 #   make clean
 # =============================================================================
@@ -22,6 +22,7 @@ CCONTROL  := $(BUILD)/comp_control_test
 SRESPONSE := $(BUILD)/sat_response_test
 SCONTROL  := $(BUILD)/sat_control_test
 LRESPONSE := $(BUILD)/lim_response_test
+CHAIN     := $(BUILD)/chain_test
 
 REPORT    := test_report.h
 COMMON    := eq_test_common.h $(REPORT) ../src/dsp_biquad.h
@@ -31,6 +32,8 @@ SAT_COMMON := sat_test_common.h $(COMMON) ../src/dsp_saturation.h \
              ../src/dsp_halfband.h ../src/dsp_common.h ../src/mastering_dsp.h
 LIM_COMMON := lim_test_common.h $(REPORT) ../src/dsp_limiter.h ../src/dsp_common.h \
               ../src/dsp_halfband.h
+CHAIN_COMMON := chain_test_common.h $(REPORT) ../src/mastering_dsp.h \
+              ../src/dsp_limiter.h ../src/dsp_common.h ../src/dsp_halfband.h
 DSP_SRC   := ../src/mastering_dsp.cpp
 DSP_HDRS  := ../src/mastering_dsp.h ../src/dsp_common.h ../src/dsp_compressor.h \
              ../src/dsp_limiter.h ../src/dsp_saturation.h ../src/dsp_dither.h \
@@ -73,8 +76,13 @@ $(SCONTROL): sat_control_test.cpp $(SAT_COMMON) | $(BUILD)
 $(LRESPONSE): lim_response_test.cpp $(LIM_COMMON) | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -o $@
 
+# chain_test is the only harness that drives the assembled chain, so it is the
+# only one that links mastering_dsp.cpp *and* needs every stage header.
+$(CHAIN): chain_test.cpp $(CHAIN_COMMON) $(DSP_SRC) $(DSP_HDRS) | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(DSP_SRC) -o $@
+
 run: $(RESPONSE) $(CONTROL) $(CRESPONSE) $(CCONTROL) $(SRESPONSE) $(SCONTROL) \
-     $(LRESPONSE)
+     $(LRESPONSE) $(CHAIN)
 	@./$(RESPONSE)
 	@./$(CONTROL)
 	@./$(CRESPONSE)
@@ -82,6 +90,7 @@ run: $(RESPONSE) $(CONTROL) $(CRESPONSE) $(CCONTROL) $(SRESPONSE) $(SCONTROL) \
 	@./$(SRESPONSE)
 	@./$(SCONTROL)
 	@./$(LRESPONSE)
+	@./$(CHAIN)
 
 golden: $(RESPONSE) $(CRESPONSE) $(SRESPONSE)
 	@mkdir -p golden
