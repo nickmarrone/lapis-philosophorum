@@ -4,12 +4,12 @@ A stereo-linked mastering-chain firmware for the [Hermetic Modular Alchemy
 Lab](https://hermeticmodular.com/modules/alchemy-lab) module, built on the
 [Alchemy SDK](https://github.com/hermetic-modular/alchemy-sdk).
 
-Signal path: In → 3-band EQ → Compressor → Saturation → Limiter → Output
-Trim → Dither → Out, stereo-linked throughout — one set of controls and one
-gain applied to both channels, so they never drift apart. The limiter
-detects `max(|L|,|R|)`; the compressor sums the two channels' power, the
-way a stereo-linked analogue compressor sums its detector currents. Three
-pages of six knobs each:
+Signal path: In → 3-band EQ → Compressor → Tape Saturation → Limiter →
+Output Trim → Dither → Out, stereo-linked throughout — one set of controls
+and one gain applied to both channels, so they never drift apart. The
+limiter detects `max(|L|,|R|)`; the compressor sums the two channels'
+power, the way a stereo-linked analogue compressor sums its detector
+currents. Four pages sharing six knobs:
 
 - **Page 1 — EQ (amber).** Low shelf, mid peak, and high shelf, each with
   freq/gain; the mid band's Q cycles between three widths.
@@ -19,18 +19,29 @@ pages of six knobs each:
   SSL-style dual-time-constant Glue. Each character carries its own knee
   width (6 / 12 / 18 dB), sidechain high-pass corner (30 / 60 / 90 Hz), and
   auto-makeup.
-- **Page 3 — Output (red).** Saturation drive and asymmetry feed a
-  brickwall limiter (ceiling, release), followed by output trim and TPDF
-  dither depth (0–2 LSB at 24-bit, matching the codec's native word
-  length).
+- **Page 3 — Tape (gold).** A record/playback emphasis pair around a tanh
+  knee, which is what makes saturation frequency-dependent rather than
+  memoryless: drive, dry/wet mix, emphasis, asymmetry, and head bump, with
+  three tape machines on B3 — 30 ips, 15 ips, and Saturated. Each machine
+  carries its own emphasis shelf, knee and head-bump resonance. Runs 2×
+  oversampled with first-order ADAA, and is unity-gain at small signal at
+  every drive setting.
+- **Page 4 — Output (red).** Brickwall limiter (ceiling, release),
+  followed by output trim and TPDF dither depth (0–2 LSB at 24-bit,
+  matching the codec's native word length).
 
 Controls: **B1** tap cycles pages. **B2** tap toggles bypass for the
-current page's stage (EQ / compressor / saturation). **B3** tap cycles the
-current page's mode (EQ: mid-Q 0.707 / 1.5 / 4.0; compressor: Precise /
-Adaptive / Glue; output: saturation cubic-soft / hard clip). **B2+B3** held for 2 s
-enters the SDK's settings mode, same as the template. Presets and settings
-are kept from the template; **param lock and CV routing have been
-removed** — every knob is a direct, unlatched control.
+current page's stage (EQ / compressor / tape / limiter). **B3** tap cycles
+the current page's mode (EQ: mid-Q 0.707 / 1.5 / 4.0; compressor: Precise
+/ Adaptive / Glue; tape: 30 ips / 15 ips / Saturated; output: none).
+**B2+B3** held for 2 s enters the SDK's settings mode, same as the
+template. Presets and settings are kept from the template; **param lock
+and CV routing have been removed** — every knob is a direct, unlatched
+control.
+
+Total latency is 63 samples (1.3 ms) — 48 for the limiter's lookahead, 15
+for the tape stage's half-band filters — and is constant regardless of
+bypass state.
 
 The project packages the Alchemy SDK and libDaisy as git submodules and
 builds with the standard Daisy `make` workflow.
@@ -53,12 +64,15 @@ builds with the standard Daisy `make` workflow.
 │   ├── mastering.cpp         hardware wiring, pages, knobs, buttons, LEDs, presets
 │   ├── mastering_dsp.*       chain orchestration + audio callback
 │   ├── dsp_common.h          shared constants and helpers
-│   ├── dsp_biquad.h          RBJ biquad (low shelf / peak / high shelf)
+│   ├── dsp_biquad.h          matched-magnitude biquads + coefficient inversion
 │   ├── dsp_compressor.h      log-domain bus compressor
 │   ├── dsp_limiter.h         brickwall limiter (instant attack, exponential release)
-│   ├── dsp_saturation.h      waveshaper + DC blocker
+│   ├── dsp_saturation.h      tape saturation: emphasis pair, ADAA tanh, head bump
+│   ├── dsp_halfband.h        2x polyphase half-band up/downsamplers + matched dry delay
 │   ├── dsp_dither.h          xorshift32 TPDF dither
 │   └── mastering_palette.h   LED color palettes
+├── tools/
+│   └── halfband_design.py    regenerates the half-band tap table
 └── lib/
     ├── alchemy-sdk/     Alchemy framework + board support   (submodule)
     └── libDaisy/        Electrosmith Daisy library           (submodule)
@@ -116,7 +130,7 @@ The [Developer Guide](docs/DEVELOPER_GUIDE.md) covers the architecture and
 has step-by-step recipes for adding a knob, adding a DSP stage, adding a
 page, and extending the preset payload. The short version:
 
-1. **The control/DSP seam** is the three parameter structs in
+1. **The control/DSP seam** is the four parameter structs in
    [`src/mastering_dsp.h`](src/mastering_dsp.h). The DSP layer knows
    nothing about the SDK; the control layer pushes engineering units
    (Hz, dB, ms) into it once per frame.

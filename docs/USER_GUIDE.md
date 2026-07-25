@@ -17,14 +17,13 @@ and no longer ducks the whole mix on its own.
 ## Signal flow
 
 ```
-IN ──▶ 3-band EQ ──▶ Compressor ──▶ Saturation ──▶ Limiter ──▶ Trim ──▶ Dither ──▶ OUT
-        (bypass)      (bypass)       (bypass)      always     always    always
+IN ──▶ 3-band EQ ──▶ Compressor ──▶ Tape ──▶ Limiter ──▶ Trim ──▶ Dither ──▶ OUT
+        (bypass)      (bypass)     (bypass)  (bypass)    always    always
 ```
 
-- **EQ, Compressor, and Saturation** can each be bypassed.
-- **Limiter, Trim, and Dither** are always in circuit. Set the limiter
-  ceiling to its maximum (−0.1 dB) and dither to 0 if you want them
-  effectively out of the way.
+- **EQ, Compressor, Tape, and Limiter** can each be bypassed.
+- **Trim and Dither** are always in circuit. Set trim to centre and dither
+  to 0 if you want them out of the way.
 
 Audio I/O is the module's stereo audio in and out, running at 48 kHz
 through the Daisy codec's 24-bit converters. The dither stage is scaled in
@@ -36,9 +35,9 @@ through the Daisy codec's 24-bit converters. The dither stage is scaled in
 
 | Control | Action | What it does |
 |---|---|---|
-| **B1** | tap | Cycle pages: EQ → Compressor → Output → EQ |
+| **B1** | tap | Cycle pages: EQ → Compressor → Tape → Output → EQ |
 | **B2** | tap | Bypass the current page's stage |
-| **B3** | tap | Cycle the current page's mode |
+| **B3** | tap | Cycle the current page's mode (nothing on Output) |
 | **B2 + B3** | hold 2 s | Enter settings mode |
 | **B2** or **B3** | tap (in settings) | Exit settings mode |
 | **B1** | tap (in settings) | Cycle settings pages |
@@ -55,7 +54,7 @@ The six knobs are **K1–K6**, arranged as three rows of two: (K1, K2),
 When you change pages, the knobs do **not** jump to their new positions.
 Each knob stays at its stored value until you physically sweep through
 that value, at which point it "catches" and starts tracking again. This is
-what lets three pages share six physical knobs without a page change
+what lets four pages share six physical knobs without a page change
 destroying your settings.
 
 The same applies after loading a preset — every knob re-arms, so nothing
@@ -182,37 +181,99 @@ ratio 1.5:1, attack 10 ms, release ~200 ms, mix 1.0.
 
 ---
 
-## Page 3 — Output (red)
+## Page 3 — Tape (gold)
 
-Saturation, brickwall limiting, output level, and dither.
+A tape-machine saturation stage: record-side emphasis, a soft magnetic
+knee, playback-side de-emphasis, and a head bump.
 
 | Knob | Parameter | Range | Curve |
 |---|---|---|---|
-| K1 | Saturation drive | 0 dB – +24 dB | linear |
-| K2 | Asymmetry | −0.3 – +0.3 | linear, centre = 0 |
-| K3 | Limiter ceiling | −6 dB – −0.1 dB | linear |
-| K4 | Limiter release | 10 ms – 500 ms | exponential |
-| K5 | Output trim | −12 dB – +12 dB | linear, centre = 0 |
-| K6 | Dither | 0 – 2 LSB (24-bit) | linear |
+| K1 | Drive | 0 dB – +24 dB | linear |
+| K2 | Mix (dry/wet) | 0 – 1 | linear |
+| K3 | Emphasis | 0 – 1 | linear |
+| K4 | Asymmetry | −0.3 – +0.3 | linear, centre = 0 |
+| K5 | Head bump | 0 – 1 | linear |
+| K6 | — | unassigned | |
 
-K1/K3/K4/K6 draw as red level arcs. K2 and K5 are bipolar — red to the
-right, cyan to the left, dim white at centre.
+K1/K2/K3/K5 draw as gold level arcs. K4 is bipolar — gold to the right,
+blue to the left, dim white at centre.
 
-- **B2 tap** — bypass the **saturation** stage only. The limiter, trim,
-  and dither keep running.
-- **B3 tap** — cycle the **saturation shape**:
+- **B2 tap** — bypass the tape stage. The delay is matched on both sides,
+  so bypassing does not shift timing or comb against anything.
+- **B3 tap** — cycle the **machine**:
 
-| Shape | Character | B3 colour |
+| Machine | Character | B3 colour |
 |---|---|---|
-| Cubic soft clip | rounded, progressive, tube-ish | orange |
-| Hard clip | flat-topped, aggressive | deep red |
+| 30 ips | tight and extended — the least of everything | pale gold |
+| 15 ips | the classic: more bump, earlier knee | warm gold |
+| Saturated | hot-levelled, audible, the most colour | deep amber |
 
-**Asymmetry** offsets the signal before the waveshaper, so the positive
-and negative halves clip differently. That generates even-order harmonics
-(a warmer, fuller colouration) instead of the odd-order-only harmonics of
-a symmetric shaper. A DC blocker after the shaper removes the offset
-itself, so no DC reaches the output. At centre the shaper is perfectly
-symmetric.
+Each machine sets its own emphasis curve, knee and bump frequency
+together. They are not three amounts of the same thing — 30 ips
+emphasises higher and later and puts a small bump at 50 Hz; Saturated
+emphasises lower and harder and puts a bigger bump at 35 Hz, the way
+slower tape actually behaves.
+
+**Drive does not change level.** The stage divides out exactly what it
+multiplied in, so small signals come through at unity at every drive
+setting. Turning drive up changes *tone*, not loudness — which is what
+makes it usable at the end of a chain and makes the bypass A/B honest.
+
+**Emphasis is the knob that makes it tape.** The record side lifts the
+high end before the saturator and the playback side takes exactly the
+same amount back out afterwards, so the response is flat when nothing is
+being driven. But the highs arrive at the knee already boosted, so they
+saturate *first*. At full emphasis and 18 dB of drive, 6 kHz compresses
+about 8 dB more than 200 Hz while the low end does not move at all. That
+frequency-dependent compression is the thing a static waveshaper cannot
+do at any setting. At 0 the stage saturates every frequency equally,
+which is a perfectly good "just a soft clipper" sound if that is what you
+want.
+
+**Asymmetry** offsets the signal before the shaper, so the positive and
+negative halves saturate differently. That generates even-order harmonics
+(a warmer, fuller colouration) on top of the odd-order series a symmetric
+shaper makes. A DC blocker after the shaper removes the offset itself, so
+no DC reaches the output. At centre the shaper is perfectly symmetric and
+makes no second harmonic at all.
+
+**Head bump** is the low-frequency resonance a playback head gives you
+from the gap geometry — a lift of one to three dB at 35–50 Hz depending
+on machine, gone by 200 Hz. It is deliberately not something the EQ page
+can make: the low shelf is a shelf, and this is a bump with a return
+below it.
+
+**Mix** runs the dry signal through a matched delay, so a partial mix
+stays phase-coherent instead of combing. At 0 the stage is bit-identical
+to bypass.
+
+**Starting point:** 15 ips, drive 8–12 dB, mix 1.0, emphasis around 0.5,
+asymmetry at centre, bump 0.5. Push drive until the top end starts to
+soften, then back off a couple of dB.
+
+---
+
+## Page 4 — Output (red)
+
+Brickwall limiting, output level, and dither.
+
+| Knob | Parameter | Range | Curve |
+|---|---|---|---|
+| K1 | Limiter ceiling | −6 dB – −0.1 dB | linear |
+| K2 | Limiter release | 10 ms – 500 ms | exponential |
+| K3 | Output trim | −12 dB – +12 dB | linear, centre = 0 |
+| K4 | Dither | 0 – 2 LSB (24-bit) | linear |
+| K5, K6 | — | unassigned | |
+
+K1/K2/K4 draw as red level arcs. K3 is bipolar — red to the right, cyan
+to the left, dim white at centre.
+
+- **B2 tap** — bypass the **limiter**. Trim and dither keep running, and
+  so does the limiter's lookahead delay, so latency does not change and
+  the A/B is time-aligned.
+- **B3 tap** — nothing. This page has no secondary mode, and B3 shows a
+  dim neutral grey to say so rather than a stale colour from another
+  page.
 
 **The limiter** looks 1 ms ahead. It sees a peak coming before you hear it
 and has the gain down by the time it arrives, so loud transients are ridden
@@ -221,8 +282,10 @@ release settings are transparent on dense material but will pump audibly on
 sparse, transient-heavy material — slow the release down if you hear it
 breathing.
 
-That 1 ms is the module's entire latency, and it is there whether or not
-the limiter is doing anything.
+The module's total latency is **63 samples, 1.3 ms** — 48 for the
+limiter's lookahead and 15 for the tape stage's oversampling filters. It
+is constant, and it is there whether or not either stage is doing
+anything or is bypassed.
 
 **⚠️ Trim sits *after* the limiter.** Positive trim can push the signal
 back above the ceiling you just set, and past 0 dBFS it will clip the
@@ -244,9 +307,9 @@ before your converter or recorder.
 | LED | Meaning |
 |---|---|
 | Knob rings | Current value of that knob on the active page |
-| **B1** | Active page: amber = EQ, blue = Compressor, red = Output |
+| **B1** | Active page: amber = EQ, blue = Compressor, gold = Tape, red = Output |
 | **B2** | Page colour at full brightness = stage active; heavily dimmed = bypassed |
-| **B3** | Current mode for the active page (see the colour tables above) |
+| **B3** | Current mode for the active page (see the colour tables above); dim grey on Output, which has none |
 
 Ring brightness is set globally in settings — the LEDs are capable of
 getting very bright and quite hot, so the default is deliberately
@@ -258,9 +321,9 @@ conservative.
 
 The module has **16 preset slots** in flash, with wear levelling.
 
-A preset stores everything: all eighteen knob values across all three
-pages, all three bypass states, the mid-Q index, the compressor character, the
-saturation shape, and your settings (brightness).
+A preset stores everything: all twenty-one knob values across all four
+pages, all four bypass states, the mid-Q index, the compressor character,
+the tape machine, and your settings (brightness).
 
 ### Saving and loading
 
@@ -288,11 +351,10 @@ a way that changes what a preset contains, old slots are treated as empty
 rather than being restored incorrectly. Losing your presets after a
 firmware update is the safety mechanism working, not a fault.
 
-**This release invalidates existing slots**, for two independent reasons:
-the compressor's two-state knee toggle became a three-state character, and
-the Ratio knob was re-tapered, so a stored ratio position would restore a
-different ratio than the one you saved. You will need to re-save your
-chains.
+**This release invalidates existing slots.** The saturation moved onto its
+own page, which changed both the number of pages and what a preset
+records — a stored slot from the previous firmware would put the wrong
+values on the wrong knobs. You will need to re-save your chains.
 
 ---
 
@@ -325,10 +387,12 @@ mastering chain wants stable, repeatable settings, not modulation.
 will drive the compressor harder. Set your EQ first, then set the
 threshold.
 
-**Order of operations that works:** EQ → compressor → then output stage
-last. Set the limiter ceiling before you set drive, so you can hear what
-the saturation is actually contributing rather than what the limiter is
-taking away.
+**Order of operations that works:** EQ → compressor → tape → output. Set
+the limiter ceiling before you set drive, so you can hear what the tape
+stage is actually contributing rather than what the limiter is taking
+away. Because drive is level-compensated, you can leave the limiter alone
+while you dial it in — turning drive up will not send more into the
+ceiling.
 
 **Bypass is for comparison, not for saving CPU.** Every stage keeps
 running while bypassed — its output is simply discarded. This means A/B
@@ -364,10 +428,11 @@ survives reflashes.
 | Channels | Stereo, fully linked |
 | EQ | 3 bands, ±15 dB, magnitude-matched biquads, zero latency |
 | Compressor | Feed-forward, log-domain, 1:1–20:1, three characters, sidechain HPF, parallel mix |
-| Saturation | Cubic soft clip or hard clip, ±0.3 asymmetry, DC-blocked |
+| Tape | Emphasis/de-emphasis pair, tanh knee, 3 machines, ±0.3 asymmetry, head bump, dry/wet mix, DC-blocked |
+| Tape anti-aliasing | 2× oversampled (31-tap half-band) plus first-order ADAA; aliases ≥58 dB down at full drive |
 | Limiter | Brickwall, 1 ms lookahead, exponential release |
 | Dither | TPDF, 0–2 LSB @ 24-bit |
-| Latency | 48 samples (1.0 ms), all of it the limiter |
+| Latency | 63 samples (1.3 ms) — 48 limiter, 15 tape; constant |
 | Presets | 16 slots, flash, wear-levelled |
 | Control rate | ~60 Hz frames, 1 ms button polling |
 

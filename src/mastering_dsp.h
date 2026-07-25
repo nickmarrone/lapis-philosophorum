@@ -1,6 +1,10 @@
 /**
  * mastering_dsp.h — Stereo-linked mastering chain: EQ -> Compressor ->
- * Saturation -> Limiter -> Output Trim -> TPDF Dither.
+ * Tape Saturation -> Limiter -> Output Trim -> TPDF Dither.
+ *
+ * Chain latency is 63 samples (1.3 ms): 48 of limiter lookahead and 15 of the
+ * saturator's oversampling pair. Both are unconditional — every stage's bypass
+ * takes a matched-delay dry path, so latency never depends on bypass state.
  *
  * The DSP knows nothing about VirtualKnob, ControlLoop, or any SDK surface.
  * The control side computes parameters in engineering units (Hz, dB, ms)
@@ -42,20 +46,40 @@ struct CompParams {
     uint8_t character;      // CompCharacter; clamped in Configure
     bool    bypass;
 };
-struct OutParams {
+/**
+ * Saturation character — selects the tape machine and every constant that goes
+ * with it: pre-emphasis corner and depth, head-bump tuning, and how early the
+ * shaper's knee arrives. The table itself is saturator-private; see
+ * dsp_saturation.h.
+ *
+ *   30 ips    — tight low end, extended top, saturates late.
+ *   15 ips    — the classic: bigger bump, stronger HF-first compression.
+ *   Saturated — low bias, early knee, audible.
+ */
+enum SatCharacter : uint8_t { kSat30Ips = 0, kSat15Ips = 1, kSatSaturated = 2 };
+
+struct SatParams {
     float   drive_db;       // 0..24
-    float   asym;           // -0.3..+0.3 (pre-sat DC offset)
-    float   ceiling_db;     // -6..-0.1
-    float   lim_release_ms; // 10..500
-    float   trim_db;        // -12..+12
-    float   dither_lsb;     // 0..2 (LSBs @ 24-bit)
-    uint8_t sat_type;       // 0 = cubic soft clip, 1 = hard clip
-    bool    sat_bypass;
+    float   mix;            // 0..1
+    float   emphasis;       // 0..1 amount; the character sets the curve
+    float   asym;           // -0.3..+0.3 (pre-shaper DC offset)
+    float   bump;           // 0..1 amount; the character sets f and Q
+    uint8_t character;      // SatCharacter; clamped in Configure
+    bool    bypass;
+};
+
+struct OutParams {
+    float ceiling_db;       // -6..-0.1
+    float lim_release_ms;   // 10..500
+    float trim_db;          // -12..+12
+    float dither_lsb;       // 0..2 (LSBs @ 24-bit)
+    bool  lim_bypass;
 };
 
 void  Init(float sample_rate);
 void  SetEq(const EqParams&);       // control-rate; recomputes coeffs
 void  SetComp(const CompParams&);   // control-rate; ms→coef, dB→lin
+void  SetSat(const SatParams&);     // control-rate; designs emphasis + bump
 void  SetOutput(const OutParams&);
 float CompGainReductionDb();        // >= 0 dB GR, for optional LED meter
 void  Process(daisy::AudioHandle::InputBuffer in,

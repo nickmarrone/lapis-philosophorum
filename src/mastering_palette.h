@@ -1,5 +1,5 @@
 /**
- * mastering_palette.h — Per-page LED palettes for the 3-page mastering chain.
+ * mastering_palette.h — Per-page LED palettes for the 4-page mastering chain.
  *
  * You don't need to implement something like this - this is simply to keep
  * colors organized and out of the main flow of the main file.
@@ -8,8 +8,9 @@
  * button paint, and as the base for the B2 bypass-dim scale) plus a
  * PagePalette: the primary arc color for Level rings (freq/ratio/etc.) and
  * the positive/negative/center colors for Bipolar rings (gain/trim/asym).
- * B3's per-page mode indicator (Q, compressor character, saturation type) is
- * a small fixed color array indexed by the current mode.
+ * B3's per-page mode indicator (Q, compressor character, tape machine) is a
+ * small fixed color array indexed by the current mode. The Output page has no
+ * secondary mode and paints kModeInert instead.
  */
 
 #pragma once
@@ -30,7 +31,8 @@ struct PagePalette
  * color scaled by kBypassDim for the B2 bypass LED. */
 constexpr alchemy::LedPanel::Rgb kPageAmber = {0xFF, 0xA0, 0x00}; // page 1: EQ
 constexpr alchemy::LedPanel::Rgb kPageBlue  = {0x00, 0x60, 0xFF}; // page 2: Compressor
-constexpr alchemy::LedPanel::Rgb kPageRed   = {0xFF, 0x20, 0x20}; // page 3: Output
+constexpr alchemy::LedPanel::Rgb kPageGold  = {0xFF, 0xB0, 0x30}; // page 3: Saturation
+constexpr alchemy::LedPanel::Rgb kPageRed   = {0xFF, 0x20, 0x20}; // page 4: Output
 
 constexpr alchemy::LedPanel::Rgb kDimWhite = {0x40, 0x40, 0x40}; // Bipolar center, all pages
 
@@ -55,10 +57,21 @@ constexpr PagePalette kCompPalette = {
     kDimWhite,
 };
 
-/* ── Page 3 — Output (red) ───────────────────────────────────────────────
- * K1/K3/K4/K6 (Drive/Ceiling/Lim Rel/Dither) are Level rings -> arc. K2/K5
- * (Asym/Trim) are Bipolar -> positive uses the page color, negative uses a
- * cool contrast. */
+/* ── Page 3 — Tape saturation (gold) ─────────────────────────────────────
+ * K1/K2/K3/K5 (Drive/Mix/Emphasis/Head Bump) are Level rings -> arc. K4
+ * (Asym) is Bipolar -> positive uses the page color, negative uses a cool
+ * contrast. Gold rather than the old red: the page is a tape machine now, and
+ * red still belongs to the thing that stops the signal leaving. */
+constexpr PagePalette kSatPalette = {
+    kPageGold,
+    kPageGold,
+    {0x00, 0x80, 0xC0},
+    kDimWhite,
+};
+
+/* ── Page 4 — Output (red) ───────────────────────────────────────────────
+ * K1/K2/K4 (Ceiling/Lim Rel/Dither) are Level rings -> arc. K3 (Trim) is
+ * Bipolar -> positive uses the page color, negative uses a cool contrast. */
 constexpr PagePalette kOutPalette = {
     kPageRed,
     kPageRed,
@@ -88,11 +101,17 @@ constexpr alchemy::LedPanel::Rgb kCharColors[3] = {
     {0xFF, 0x30, 0x60}, // Glue     - crimson
 };
 
-/** Page 3, sat_type (0 = cubic soft clip, 1 = hard clip). */
-constexpr alchemy::LedPanel::Rgb kSatColors[2] = {
-    {0xFF, 0x80, 0x00}, // cubic soft clip - orange
-    {0xA0, 0x00, 0x00}, // hard clip - deep red
+/** Page 3, sat_character -> {30 ips, 15 ips, Saturated}: the same tape run
+ *  progressively harder, so the colour warms as the machine does. */
+constexpr alchemy::LedPanel::Rgb kSatColors[3] = {
+    {0xFF, 0xE0, 0xA0}, // 30 ips    - pale gold
+    {0xFF, 0xB0, 0x30}, // 15 ips    - warm gold
+    {0xC0, 0x60, 0x00}, // Saturated - deep amber
 };
+
+/** Page 4 has no B3 mode. Dim white reads as "nothing to cycle here" rather
+ *  than as an unlit LED, which would look like a fault. */
+constexpr alchemy::LedPanel::Rgb kModeInert = {0x30, 0x30, 0x30};
 
 /** Dim factor applied to a page/button color when its stage is bypassed. */
 constexpr float kBypassDim = 0.15f;

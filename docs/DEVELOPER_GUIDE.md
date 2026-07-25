@@ -19,7 +19,7 @@ The firmware is two layers with a deliberately narrow seam between them.
 │  VirtualKnobs, Pages, Pager, Presets, Settings, LED paint,   │
 │  tap detection, ChainModes persistence                       │
 └───────────────────────────┬──────────────────────────────────┘
-                            │  SetEq() / SetComp() / SetOutput()
+                            │  SetEq() / SetComp() / SetSat() / SetOutput()
                             │  structs of plain floats + bools
                             ▼
 ┌──────────────────────────────────────────────────────────────┐
@@ -28,8 +28,8 @@ The firmware is two layers with a deliberately narrow seam between them.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**The seam is the three parameter structs** in `mastering_dsp.h`
-(`EqParams`, `CompParams`, `OutParams`). They carry engineering units —
+**The seam is the four parameter structs** in `mastering_dsp.h`
+(`EqParams`, `CompParams`, `SatParams`, `OutParams`). They carry engineering units —
 Hz, dB, ms, ratio — and nothing else. The DSP layer has no idea that
 `VirtualKnob`, `ControlLoop`, or the Alchemy SDK exist; its only external
 dependency is `daisy::AudioHandle` for the callback signature.
@@ -54,9 +54,10 @@ Two properties fall out of this, and both are worth preserving:
 
 `kEngineBlockSamples = 24` at 48 kHz means a 0.5 ms audio block. Most
 setters are lock-free by virtue of writing plain floats that the ISR
-reads. **The EQ is the exception** and is worth reading before you copy
-the pattern for anything else: it is double-buffered and smoothed, because
-plain float writes were not good enough for it.
+reads. **The two stages that publish biquad coefficients are the
+exception** — the EQ and the saturator — and the EQ is worth reading before
+you copy the pattern for anything else: it is double-buffered and smoothed,
+because plain float writes were not good enough for it.
 
 - **Handoff.** `SetEq` fills the bank slot the ISR is *not* reading, then
   publishes it with one `std::atomic` index store. Without this, the ISR
@@ -70,6 +71,12 @@ plain float writes were not good enough for it.
   produce a *bit-identical* coefficient set frame after frame — which is
   what actually silences the zipper, and what `tests/eq_control_test.cpp`
   asserts.
+
+The saturator (§4.2) uses the same shape for its emphasis and head-bump
+coefficients: dirty-checked design at control rate, atomic index publish,
+per-block lerp on the audio side. Its scalar parameters — drive, mix,
+asym — are plain floats eased at 5 ms, which is enough because they cannot
+tear into an unstable set the way five biquad coefficients can.
 
 The general constraint still stands for every other stage: **do not add a
 parameter whose per-frame step would produce an audible discontinuity**
@@ -93,12 +100,16 @@ src/
 ├── mastering_dsp.h        the seam: parameter structs + entry points
 ├── mastering_dsp.cpp      chain orchestration + audio callback
 ├── dsp_common.h           shared constexpr + inline helpers
-├── dsp_biquad.h           matched-magnitude biquad (Direct Form I)
+├── dsp_biquad.h           matched-magnitude biquad (Direct Form I) + LerpCoeffs/InvertBiquad
 ├── dsp_compressor.h       log-domain feed-forward glue compressor
-├── dsp_saturation.h       waveshaper + DC blocker
+├── dsp_saturation.h       tape saturation — emphasis pair, ADAA tanh, head bump
+├── dsp_halfband.h         2x polyphase half-band up/down + matched dry delay
 ├── dsp_limiter.h          brickwall limiter
 ├── dsp_dither.h           xorshift32 TPDF generator
 └── mastering_palette.h    LED colour constants
+
+tools/
+└── halfband_design.py     regenerates dsp_halfband.h's tap table (Parks-McClellan)
 ```
 
 The `dsp_*.h` stage files are **header-only structs with a `Configure()`
@@ -136,8 +147,9 @@ anything with a meaningful centre (gains, asymmetry, trim). Colours all
 come from `mastering_palette.h` — keeping them out of the declarations
 keeps the knob table readable as a parameter table.
 
-Three `Page` objects bind six knobs each. Note the pot indices repeat
-across pages (every page uses pots 0–5); the `Pager` is what disambiguates
+Four `Page` objects bind up to six knobs each — EQ and Compressor use all
+six, Tape uses five, Output four. Note the pot indices repeat across pages
+(every page starts at pot 0); the `Pager` is what disambiguates
 them, holding per-`(page, pot)` stored values and per-`(page, pot)` catch
 state.
 
@@ -151,7 +163,7 @@ seventh to a page, that's why.
 ```cpp
 loop.Use(pager)
     .Use(settings)
-    .Use(eq_page).Use(comp_page).Use(out_page)
+    .Use(eq_page).Use(comp_page).Use(sat_page).Use(out_page)
     .OnFrame(UpdateParams)     // once per ~16 ms frame
     .OnPoll(PollTaps)          // once per 1 ms, inside the frame
     .OnRender(RenderButtons);  // once per frame, during LED paint
@@ -166,7 +178,7 @@ early-returns on `settings.IsActive()` (settings owns the panel then).
 
 ### 3.3 Parameter push is unconditional
 
-`UpdateParams()` calls all three setters with every current value, every
+`UpdateParams()` calls all four setters with every current value, every
 frame, with no dirty-checking:
 
 ```cpp
@@ -230,30 +242,32 @@ Knob values are persisted for free: `Pager` is itself a `Serializable`
 holding the per-`(page, pot)` stored values, and `presets.Manage(pager)`
 registers it.
 
-What isn't carried by any knob is the six bytes of mode/bypass state,
+What isn't carried by any knob is the seven bytes of mode/bypass state,
 which get their own `Serializable`:
 
 ```cpp
 struct ChainModes : public alchemy::Serializable
 {
-    uint8_t eq_bypass, comp_bypass, sat_bypass;
-    uint8_t mid_q_index, comp_character, sat_type;
+    uint8_t eq_bypass, comp_bypass, sat_bypass;         // bytes 0-2
+    uint8_t mid_q_index, comp_character, sat_character; // bytes 3-5
+    uint8_t lim_bypass;                                 // byte 6 — appended
 
-    size_t   SerializedSize() const override { return 6; }
+    size_t   SerializedSize() const override { return 7; }
     void     Serialize(uint8_t* out) const override;
     bool     Deserialize(const uint8_t* in) override;   // clamps every field
-    uint32_t SchemaHash() const override { return 0x4D535432u; }
+    uint32_t SchemaHash() const override { return 0x4D535433u; }
 };
 ```
 
 Two things to note:
 
-**`Deserialize` clamps, it doesn't validate.** `in[3] % 3u` for the Q
-index, `in[4] % 3u` for the compressor character, `& 1u` for the booleans. A corrupt or foreign slot can therefore
-never push an out-of-range index into `kMidQTable[]` or into the DSP. This
-is the cheap, correct discipline for flash-backed state — don't relax it.
+**`Deserialize` clamps, it doesn't validate.** `% 3u` for the Q index, the
+compressor character and the tape character; `& 1u` for the booleans. A
+corrupt or foreign slot can therefore never push an out-of-range index
+into `kMidQTable[]`, `kSatChars[]` or into the DSP. This is the cheap,
+correct discipline for flash-backed state — don't relax it.
 
-**`SchemaHash()` is a manual constant** (`0x4D535432` = "MST2"). The
+**`SchemaHash()` is a manual constant** (`0x4D535433` = "MST3"). The
 preset store XORs every managed component's hash and stamps slots with the
 result; a mismatch on load makes the slot read as empty rather than
 restoring misaligned bytes. **If you change `ChainModes`'s field layout or
@@ -261,12 +275,19 @@ size, bump this constant.** If you forget, old slots will deserialize into
 the new layout and produce garbage — the one failure mode the mechanism
 exists to prevent.
 
-It was last bumped MST1 → MST2 when byte 4 changed from a two-state
-soft-knee flag to a three-state compressor character. Note that the same
-release also re-tapered the Ratio knob (see §4.2), which changes what a
-stored `Pager` norm *means* without changing its layout — a hash bump
-would have been required for that alone. When a knob's mapping changes,
-the stored values are stale even though nothing about the format is.
+It was last bumped MST2 → MST3 when the saturation moved to its own page:
+the struct grew a `lim_bypass` byte and `sat_type` became a three-state
+`sat_character`. That release also took `Pager` from three pages to four,
+which changes `Pager::SchemaHash()` independently — either bump alone
+would have invalidated old slots, which is the intended outcome, because
+the knob assignments moved wholesale.
+
+An earlier bump, MST1 → MST2, was for byte 4 changing from a two-state
+soft-knee flag to a three-state compressor character. That release also
+re-tapered the Ratio knob (see §4.2), which changes what a stored `Pager`
+norm *means* without changing its layout — a hash bump would have been
+required for that alone. When a knob's mapping changes, the stored values
+are stale even though nothing about the format is.
 
 Registration order in `main()` is the on-flash byte order:
 
@@ -344,9 +365,10 @@ whose job is a ceiling no sample may cross, while the compressor sums
 sums its two sidechain currents. The difference shows on one-sided
 material: max-linking reads a hard-panned hit at its full level and ducks
 the whole image with it; power-linking reads it 3.01 dB lower.
-`Saturator` is per-channel by index (it needs its own DC-blocker state per
-side) but shares one coefficient set. The EQ shares one coefficient set
-across two `BiquadState` arrays.
+`Saturator` is per-channel by index — it needs its own ADAA history,
+oversampler, dry delay, filter and DC-blocker state per side — but shares
+one coefficient set. The EQ shares one coefficient set across two
+`BiquadState` arrays.
 
 ### 4.2 The stages
 
@@ -474,36 +496,123 @@ a positive dB figure) for a gain-reduction meter. Nothing currently
 renders it — it's a ready hook if you want one on the compressor page's
 rings.
 
-**Saturator** (`dsp_saturation.h`) — the input is scaled by drive, offset
-by `asym`, clamped to `±kSatClamp` (1.25) to bound the cubic's domain, then
-shaped:
-
-- cubic soft clip: `1.5·(x − x³/3)`, saturating to ±1 outside |x| ≥ 1
-- hard clip: `clamp(x, −1, 1)`
-
-The shaper is **not** evaluated pointwise. It uses first-order
-antiderivative anti-aliasing (Parker et al., DAFx-16): the output is the
-integral-mean of `f` over `[x[n−1], x[n]]`,
+**Saturator** (`dsp_saturation.h`) — a tape model, not a waveshaper. Per
+channel:
 
 ```
-y[n] = (F(x[n]) − F(x[n−1])) / (x[n] − x[n−1])
+in ─┬─ emphasis ─ drive ─ [x2] ─ tanh/ADAA ─ [/2] ─ comp ─ DC ─ de-emph ─ bump ─┐
+    └─────────────── 15-sample dry delay ─────────────────────────────────── mix ─ out
 ```
 
-with `F` the closed-form antiderivative, made continuous at the piecewise
-boundaries ±1. That buys ~20 dB of alias suppression with no oversampling
-and no latency. When the input barely moves (`|dx| < 1e-7`) the quotient is
-ill-conditioned and it falls back to `f` of the midpoint.
+**The emphasis pair is the whole point.** A record head pre-emphasises,
+the medium saturates, the playback head de-emphasises by exactly the same
+curve. So the highs arrive at the knee already boosted and saturate first,
+but any *linear* boost is undone on the way out. Net effect: drive
+produces high-frequency **compression**, and the stage is flat when it is
+not being driven. This is frequency-dependent saturation with memory, and
+no memoryless curve reproduces it at any drive setting. That is the
+difference between "tape" and "a soft clipper".
 
-Note this is the one stage whose `Configure()` *does* reset running state —
-the ADAA history is meaningless if the shape function underneath it just
-changed. Everywhere else, resetting state in `Configure()` is a pop.
+The de-emphasis is `InvertBiquad()` of whatever emphasis coefficients the
+audio side is *currently* holding — recomputed once per block in
+`BeginBlock()`, after the lerp. Designing the cut from the knob instead
+would be wrong mid-move: the ISR holds a lerp of two coefficient sets, and
+`lerp(design(a), design(b)) ≠ design(lerp(a, b))`. Inverting the held
+coefficients is exact by construction at every point on the ramp;
+`sat_response_test` measures both, at 8.3e-07 against 0.0200. `InvertBiquad`
+is only safe because the emphasis shelves are minimum-phase — the
+inverse's poles are the original's zeros — which the harness also asserts,
+with 0.76 of pole margin.
 
-`offset_shaped` (the shaper's response to the offset alone) is precomputed
-in `Configure()` and subtracted from the output, which removes most of the
-DC the asymmetry introduces; a one-pole ~5 Hz high-pass per channel
-removes the remainder. Both are needed — the static subtraction handles
-the steady-state offset, the filter handles what the shaper's
-nonlinearity does to it under signal.
+**Three machines**, `kSatChars[]`, each an emphasis shelf, a head-bump
+resonance and a knee constant:
+
+| | Emphasis | Head bump | Knee |
+|---|---|---|---|
+| 30 ips | 3 kHz, +6 dB | 50 Hz, +1.5 dB, Q 1.2 | 0.8 |
+| 15 ips | 2 kHz, +9 dB | 40 Hz, +3.0 dB, Q 1.4 | 1.0 |
+| Saturated | 1.5 kHz, +12 dB | 35 Hz, +3.0 dB, Q 1.6 | 1.4 |
+
+Slower tape saturates earlier, emphasises lower and harder, and puts a
+bigger head bump lower down. The Emphasis and Bump knobs scale `emph_db`
+and `bump_db`; the shaper function itself never changes.
+
+**The shaper is `tanh`**, for a reason beyond taste: the magnetisation
+curve of a ferromagnetic medium is the Langevin function `coth(x) − 1/x`,
+and `tanh` is the same shape without the special-casing at zero. It is
+`C^∞`, so it has none of the harmonic splatter a piecewise curve's
+derivative discontinuity produces, and it approaches ±1 asymptotically, so
+there is no corner to hit.
+
+Evaluation is first-order **ADAA** (Parker et al., DAFx-16) on top of 2×
+oversampling — the output is the integral-mean of `f` over
+`[x[n−1], x[n]]`:
+
+```
+y[n] = (F(x[n]) − F(x[n−1])) / (x[n] − x[n−1]),   F(x) = ln(cosh x)
+```
+
+with a midpoint-`tanh` fallback when `|dx| < 1e-4`, where the quotient is
+ill-conditioned. **`Antideriv` is not `logf(coshf(x))`** — that overflows
+by |x| ≈ 89 and, worse, the stable form `|x| + log1p(exp(−2|x|)) − ln2`
+loses catastrophically near zero, where a result of order `x²/2` is
+assembled from terms of order `ln 2`. A Taylor series takes over below
+0.5. Getting this wrong was worth 0.057 dB of small-signal gain error and
+−2.79 dB at 12 kHz, and it was invisible until the response harness looked.
+
+Oversampling and ADAA are not redundant: ADAA on top of 2× buys a further
+**15–19 dB** of alias suppression at every drive level, measured. Its cost
+is an inherent `cos(π f / 96 kHz)` rolloff — a two-tap average is a comb —
+worth −0.17 dB at 6 kHz and −0.69 dB at 12 kHz. That is kept, not
+compensated: a gently soft top end is on-character, and correcting it would
+boost exactly the band the residual aliases land in. The harness asserts
+departure from that *curve* rather than flatness.
+
+**Gain compensation.** The input is multiplied by `knee × drive` and the
+output divided by the same, so small-signal gain is exactly unity at every
+drive setting and every character. Drive changes tone, not level — which
+is what makes bypass an honest A/B and stops the Drive knob from feeding
+the limiter.
+
+**The ADAA history is never reset.** The previous saturator reset it in
+`Configure()`, because switching between a cubic and a hard clip really
+does invalidate the stored `F(x[n−1])`. At the 60 Hz control frame that put
+one wrong sample into the output 62.5 times a second — measured at 31–35 dB
+below program, and audible as a buzz. One `tanh` for every character
+removes the reason for the reset, so the reset is gone rather than
+dirty-checked. `sat_control_test::TestReconfigureArtifact` is the
+regression, and it now reads bit-identical against a run configured once.
+
+**Asymmetry.** `asym` offsets the shaper input; `tanhf(asym)` — the
+shaper's response to the offset alone — is precomputed and subtracted,
+removing the steady-state DC, and a one-pole ~5 Hz high-pass per channel
+removes what the nonlinearity does to it under signal. Both are needed.
+
+**Cost.** This is by some distance the most expensive stage in the chain:
+four biquads, two half-band phases, and two shaper evaluations per sample
+per channel, each shaper carrying a divide and — above |x| = 0.5 — an
+`expf` and a `log1pf`. Measured on a host at **3.5× the compressor's
+per-sample cost**, which against the compressor's ~220 cycles/sample puts
+it near 780, or roughly 8 % of one core at 48 kHz. Treat that as an order
+of magnitude and not a budget: the ratio was taken on x86, whose libm and
+divider are relatively faster than the M7's, so on target the multiple is
+probably worse. **It has not been profiled on hardware.** If you add to
+this stage, measure there first.
+
+**Bypass is not a branch.** It is a mix target of zero, eased at 5 ms, so
+toggling crossfades to the delayed dry path instead of stepping. `mix = 0`
+is bit-identical to bypass, and both are the input delayed by exactly 15
+samples, so a partial mix is phase-coherent rather than a comb.
+
+**Half-band oversampling** (`dsp_halfband.h`) — a 31-tap Parks-McClellan
+half-band FIR, used polyphase. Every even-offset tap is zero and the centre
+tap is 0.5, so one phase of each converter is a pure delay and the arithmetic
+is 8 multiply-accumulates per phase rather than 31. Latency is
+`kHbLatency = 15` base-rate samples for the up/down pair together, which is
+what the chain budget spends (§8). `tools/halfband_design.py` regenerates
+the table and documents why N = 31 rather than 35: N must be ≡ 3 (mod 4)
+for a half-band, and N = 35 would cost 17 base samples against the 16
+available.
 
 **Limiter** (`dsp_limiter.h`) — brickwall with **`kLookahead` = 48 samples
 (1 ms at 48 kHz)** of lookahead, fast one-pole attack, exponential release:
@@ -528,6 +637,13 @@ that residual ~1 %, not the primary mechanism.
 
 `Configure()` deliberately does not reset `gain` or `write` — that would
 pop on a live parameter change.
+
+**Bypass gates the gain, not the delay line.** `lim_bypass` (page 4's B2)
+makes the applied gain unity; the circular buffer and the envelope keep
+running. Skipping the delay would make the module's latency depend on a
+button, which would click on the toggle and desynchronise anything
+tracking it. It also means the envelope is already settled when the
+limiter comes back in.
 
 **TPDF dither** (`dsp_dither.h`) — two independent xorshift32 draws
 subtracted to give a triangular distribution, scaled to `dither_lsb ·
@@ -656,15 +772,15 @@ so no preset changes are needed as long as the pot count is unchanged.
 
 Header-only means no `CPP_SOURCES` edit.
 
-### Add a fourth page
+### Add a fifth page
 
-1. `Pager pager(hw.buttons[0], 4, kNumPots);`
-2. `pager.SetPageColor(3, kSomeColor);`
-3. Declare knobs + a `Page(3)`, and `loop.Use(new_page)`.
+1. `Pager pager(hw.buttons[0], 5, kNumPots);`
+2. `pager.SetPageColor(4, kSomeColor);`
+3. Declare knobs + a `Page(4)`, and `loop.Use(new_page)`.
 4. Extend the `switch (page)` blocks in `UpdateParams` and
-   `RenderButtons` — both currently use `default:` for page 2, so a new
-   page will silently inherit the Output page's behaviour until you add an
-   explicit `case`.
+   `RenderButtons` — both currently use `default:` for the Output page, so
+   a new page will silently inherit its behaviour (limiter bypass, inert
+   B3) until you add an explicit `case`.
 
 Changing the page count changes `Pager`'s serialized size, so **existing
 presets are invalidated.**
@@ -686,6 +802,25 @@ presets are invalidated.**
 Steps 3 and 4 are three separate moduli that all have to agree. If they
 disagree the symptom is a character that is unreachable, or one that reads
 past the end of a table; there is no diagnostic.
+
+### Add a tape machine
+
+Same shape, different tables:
+
+1. One row in `kSatChars` (`dsp_saturation.h`) — emphasis shelf (Hz, dB),
+   head bump (Hz, dB, Q), knee.
+2. One colour in `kSatColors` (`mastering_palette.h`).
+3. Widen the `% 3u` in `ChainModes::Deserialize` **and** the `% 3` in
+   `UpdateParams`'s B3 case, and bump `SchemaHash()`.
+4. Widen the bound check in `Saturator::Configure` (`p.character < 3u`,
+   falling back to 0).
+5. Extend the character loops in `tests/sat_response_test.cpp` and
+   regenerate the goldens — the curve and harmonic grids are per character.
+
+Do **not** give a machine a different shaper function. The single `tanh`
+is what makes the ADAA history valid across a character switch, and
+therefore what lets `Configure()` leave it alone (invariant 15). A new
+shape means the reset comes back, and the 62.5 Hz artifact with it.
 
 ### Add persistent state
 
@@ -731,27 +866,48 @@ Things that will bite quietly if broken:
     silent regression. (§9)
 12. **The compressor adds no latency, and must not.** Its bypass takes the
     same-sample dry signal (§4.1), so a lookahead line would turn bypass
-    into a click — and it would spend budget the saturator is holding.
+    into a click — and the budget it would spend is now fully allocated.
     (§8)
 13. **Inside `Compressor`, gain reduction is a POSITIVE attenuation**; only
     `gr_db` is negated. The decoupled release stage uses `fmaxf`
     accordingly. Flipping either without the other silently swaps attack
     and release. (§4.2)
+14. **Latency must not depend on bypass state**, for any stage that has
+    any. The limiter's bypass gates the gain and keeps the delay line
+    running; the saturator's bypass is a mix target of zero over a matched
+    dry delay. Neither is allowed to become a branch that skips the delay.
+    (§4.2, §8)
+15. **Never reset the saturator's ADAA history in `Configure()`.** It is
+    valid across every character because the shaper is always the same
+    `tanh`; resetting it at the 60 Hz control frame injects a 62.5 Hz
+    artifact 31–35 dB below program. This was a real shipped bug.
+    `sat_control_test` is the regression. (§4.2)
+16. **Derive the de-emphasis from the coefficients the audio side is
+    holding**, not from the knob. `InvertBiquad(run_.emph)` in
+    `BeginBlock()` after the lerp is exact at every point on a ramp;
+    designing the cut from the parameter is not. (§4.2)
 
 ---
 
 ## 8. Latency budget
 
-**Chain latency today is 48 samples (1.0 ms)**, all of it the limiter's
-lookahead. `comp_control_test`'s `TestChainLatency` measures it end to end
-rather than asserting it from prose — this section has gone stale once
-already, and now something fails when it does.
+**Chain latency today is 63 samples (1.31 ms)** — 48 for the limiter's
+lookahead and 15 for the saturator's half-band pair.
+`comp_control_test`'s `TestChainLatency` measures it end to end rather than
+asserting it from prose — this section has gone stale once already, and now
+something fails when it does.
 
-For the chain as a whole, **64 samples (~1.3 ms) is the ceiling** any future
-stage may claim, so **16 samples remain**. There is no delay compensation in
-a Eurorack rack, so the limit is perceptual rather than arithmetic; at the
-end of a mastering chain nothing downstream recombines, so comb filtering is
-not the binding constraint.
+For the chain as a whole, **64 samples (~1.3 ms) is the ceiling** any stage
+may claim, so **1 sample remains**: the budget is spent. There is no delay
+compensation in a Eurorack rack, so the limit is perceptual rather than
+arithmetic; at the end of a mastering chain nothing downstream recombines,
+so comb filtering is not the binding constraint.
+
+Anything that wants latency from here has to take it from an existing
+stage. The realistic trade is the half-band filter: N = 31 costs 15 base
+samples and is what the 16 available bought. Going to N = 35 for a steeper
+transition would cost 17 and does not fit; going *down* is where slack
+would come from, at the price of alias rejection.
 
 Two stages must never spend any of it:
 
@@ -766,24 +922,28 @@ Two stages must never spend any of it:
   stage that needs it least: a glue compressor's attack is measured in tens
   of milliseconds, so lookahead buys nothing a slower attack does not.
 
-The remaining 16 samples are earmarked for the **saturator** — the one
-genuinely nonlinear stage, hence the only one where oversampling actually
-suppresses aliasing beyond what its ADAA already does.
+The 16 samples were spent on the **saturator** — the one genuinely
+nonlinear stage, hence the only one where oversampling suppresses aliasing
+beyond what ADAA already does. It uses 15 of them and buys 15–19 dB over
+ADAA alone. The saturator's own bypass is a matched dry delay, not a
+branch, so its 15 samples are present whether or not the stage is engaged
+(invariant 14).
 
 ---
 
 ## 9. Testing
 
 ```sh
-make test          # build and run all four host harnesses
+make test          # build and run all six host harnesses
 make test-golden   # regenerate the golden CSVs, deliberately
 ```
 
-Host-only, no cross-toolchain: `tests/` compiles `dsp_biquad.h` and
-`dsp_compressor.h` directly, and `mastering_dsp.cpp` against a six-line
-`AudioHandle` stub. `tests/test_report.h` holds the shared
-assert-and-print framework; `eq_test_common.h` and `comp_test_common.h`
-hold the measurement support for their respective stages.
+Host-only, no cross-toolchain: `tests/` compiles `dsp_biquad.h`,
+`dsp_compressor.h` and `dsp_saturation.h` directly, and `mastering_dsp.cpp`
+against a six-line `AudioHandle` stub. `tests/test_report.h` holds the
+shared assert-and-print framework; `eq_test_common.h`, `comp_test_common.h`
+and `sat_test_common.h` hold the measurement support for their respective
+stages.
 
 - `tests/eq_response_test.cpp` — sweeps the realized filter against the
   *analog prototype* with no prewarping (prewarping would hide the very
@@ -802,14 +962,36 @@ hold the measurement support for their respective stages.
   auto-makeup level match, mix law, and zero latency.
 - `tests/comp_control_test.cpp` — the real `SetComp`/`Process`, plus the
   end-to-end chain latency measurement that keeps §8 honest.
+- `tests/sat_response_test.cpp` — the saturator alone: half-band round-trip
+  transparency and image rejection, emphasis/de-emphasis reconstruction
+  (including mid-ramp) and inverse-filter stability, unity small-signal
+  gain at every drive and character, harmonic decay rate, asymmetry and its
+  DC, alias energy, head-bump height and return, the frequency-dependence
+  that makes it tape, bypass/mix delay matching, adversarial inputs, and
+  the goldens.
+- `tests/sat_control_test.cpp` — the real `SetSat` cadence: the 62.5 Hz
+  reconfigure regression (invariant 15), knob-sweep zipper, character
+  switching, and preset recall.
+
+Measurement in the saturation harnesses is by **Hann-windowed single-bin
+DFT**, not FFT. A saturator's output has predictable support — harmonic
+`k` of `f0` lands at `|k·f0 − m·fs|` in closed form — so the bins worth
+reading are known in advance, and reading them individually keeps the
+tests tree at `g++` and nothing else (invariant 11). The window is not
+optional: without it, leakage from the tone swamps a −90 dB alias bin, and
+the alias frequencies are not ours to place.
 
 **Negative controls are the point, not decoration.** Four of the
 compressor's assertions ship with a deliberately broken model that the same
 bound must reject — the old branching one-pole for envelope ripple, a hard
 knee for knee continuity, `Precise` for both the dual-exponential fit and
-the adaptation. A continuity bound loose enough to pass will also pass the
-thing it was meant to catch, and nothing in the output tells you which. If
-you add an assertion of that shape, add its control too.
+the adaptation. The saturation harnesses carry four more: the old cubic
+clip against the harmonic-decay bound, pointwise base-rate evaluation
+against the alias bound, a knob-designed de-emphasis against the
+reconstruction bound, and a hard-stepped knob against the zipper bound. A
+continuity bound loose enough to pass will also pass the thing it was meant
+to catch, and nothing in the output tells you which. If you add an
+assertion of that shape, add its control too.
 
 **Two things the compressor harness does that the EQ's does not**, both
 forced by the stage rather than by taste:
@@ -827,8 +1009,10 @@ forced by the stage rather than by taste:
 
 If you change the coefficient math the EQ golden will fail; if you change
 the compressor's curve or its timing, `comp_curve.csv` or
-`comp_envelope.csv` will. That is the point — regenerate only when you
-meant to change the design, and read the diff before you commit it.
+`comp_envelope.csv` will; if you touch the knee, the emphasis table or the
+shaper, `sat_curve.csv` or `sat_harmonics.csv` will. That is the point —
+regenerate only when you meant to change the design, and read the diff
+before you commit it.
 
 ---
 

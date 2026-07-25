@@ -26,13 +26,14 @@ namespace mastering_dsp {
 static constexpr int kLookahead = 48;
 
 struct Limiter {
-    void Configure(float ceiling_db, float release_ms, float fs)
+    void Configure(float ceiling_db, float release_ms, bool byp, float fs)
     {
         ceiling_lin = DbToLin(ceiling_db);
         rel_coef    = MsToCoef(release_ms, fs);
         // Attack settles to within ~1 % of target in kLookahead samples
         // (5 time-constants of tau = kLookahead/5).
         atk_coef    = 1.f - expf(-5.f / kLookahead);
+        bypass      = byp;
         // Do not reset gain or write_ — avoids a pop on live parameter changes.
     }
 
@@ -51,16 +52,27 @@ struct Limiter {
         else           gain += rel_coef  * (gd - gain);
 
         // Read kLookahead-sample-delayed audio and apply gain.
-        const int rd = (write + 1) % (kLookahead + 1);
-        l = buf_l[rd] * gain;
-        r = buf_r[rd] * gain;
-        l = Clampf(l, -ceiling_lin, ceiling_lin);
-        r = Clampf(r, -ceiling_lin, ceiling_lin);
+        //
+        // Bypass gates the gain, never the delay line or the envelope: the
+        // buffer is the chain's latency, so skipping it would make the module's
+        // latency depend on bypass state and turn the A/B into a click. The
+        // envelope keeps tracking for the same reason it does in the
+        // compressor — it is already settled when the limiter comes back in.
+        const int   rd = (write + 1) % (kLookahead + 1);
+        const float g  = bypass ? 1.f : gain;
+        l = buf_l[rd] * g;
+        r = buf_r[rd] * g;
+        if (!bypass)
+        {
+            l = Clampf(l, -ceiling_lin, ceiling_lin);
+            r = Clampf(r, -ceiling_lin, ceiling_lin);
+        }
 
         write = (write + 1) % (kLookahead + 1);
     }
 
     float gain = 1.f;
+    bool  bypass = false;
     float ceiling_lin = 1.f, rel_coef = 0.01f, atk_coef = 0.1f;
     float buf_l[kLookahead + 1] = {};
     float buf_r[kLookahead + 1] = {};

@@ -1,21 +1,22 @@
 /**
  * mastering.cpp — Alchemy Lab stereo-linked mastering chain.
- * In -> EQ -> Compressor -> Saturation -> Limiter -> Output Trim -> Dither -> Out.
+ * In -> EQ -> Compressor -> Tape Saturation -> Limiter -> Trim -> Dither -> Out.
  *
  * Pure DSP in mastering_dsp.* implements:
  * - Three-band EQ (low shelf / peaking mid / high shelf), stereo-linked params
  * - Log-domain feed-forward glue compressor (three characters, two engines)
- * - Waveshaper saturation (cubic soft clip or hard clip) + DC blocker
+ * - Tape saturation: emphasis/de-emphasis around a 2x-oversampled ADAA tanh,
+ *   head bump, three tape-machine characters
  * - Lookahead peak limiter
  * - Output trim + continuous TPDF dither
  *
  * This file implements:
  * - All the required hardware and audio callback management.
- * - Three pages of controls (EQ / Compressor / Output), switched by B1
+ * - Four pages of controls (EQ / Compressor / Saturation / Output), by B1
  * - Pot-catch on page switch (no value jumps), via Pager
  * - A short tap on B2 toggles the current page's bypass
- * - A short tap on B3 cycles/toggles the current page's secondary mode
- *   (EQ mid Q, compressor character, saturation type)
+ * - A short tap on B3 cycles the current page's secondary mode
+ *   (EQ mid Q, compressor character, tape machine; Output has none)
  * - LED ring per pot displaying its value; B2/B3 button LEDs show bypass
  *   state and secondary mode
  * - Save and recall presets with flash wear leveling
@@ -114,34 +115,50 @@ static VirtualKnob mix = VirtualKnob(5, "Mix")
     .Linear(0.f, 1.f)
     .Ring(Level(kCompPalette.arc));
 
-/* ── Page 3 — Output (red) ────────────────────────────────────────────────
- * K1/K3/K4/K6 are Level rings; K2 (Asym) and K5 (Trim) are Bipolar. */
+/* ── Page 3 — Tape saturation (gold) ──────────────────────────────────────
+ * K1/K2/K3/K5 are Level rings; K4 (Asym) is Bipolar. K6 is unassigned —
+ * there is no sixth axis worth inventing one for, and a short page is fine. */
 
 static VirtualKnob drive = VirtualKnob(0, "Drive")
     .Linear(0.f, 24.f)
-    .Ring(Level(kOutPalette.arc));
+    .Ring(Level(kSatPalette.arc));
 
-static VirtualKnob asym = VirtualKnob(1, "Asym")
+static VirtualKnob sat_mix = VirtualKnob(1, "Sat Mix")
+    .Linear(0.f, 1.f)
+    .Ring(Level(kSatPalette.arc));
+
+static VirtualKnob emphasis = VirtualKnob(2, "Emphasis")
+    .Linear(0.f, 1.f)
+    .Ring(Level(kSatPalette.arc));
+
+static VirtualKnob asym = VirtualKnob(3, "Asym")
     .Linear(-0.3f, 0.3f)
-    .Ring(Bipolar(kOutPalette.bipolar_pos,
-                  kOutPalette.bipolar_neg,
-                  kOutPalette.bipolar_center));
+    .Ring(Bipolar(kSatPalette.bipolar_pos,
+                  kSatPalette.bipolar_neg,
+                  kSatPalette.bipolar_center));
 
-static VirtualKnob ceiling = VirtualKnob(2, "Ceiling")
+static VirtualKnob bump = VirtualKnob(4, "Head Bump")
+    .Linear(0.f, 1.f)
+    .Ring(Level(kSatPalette.arc));
+
+/* ── Page 4 — Output (red) ────────────────────────────────────────────────
+ * K1/K2/K4 are Level rings; K3 (Trim) is Bipolar. */
+
+static VirtualKnob ceiling = VirtualKnob(0, "Ceiling")
     .Linear(-6.f, -0.1f)
     .Ring(Level(kOutPalette.arc));
 
-static VirtualKnob lim_rel = VirtualKnob(3, "Lim Rel")
+static VirtualKnob lim_rel = VirtualKnob(1, "Lim Rel")
     .Exp(10.f, 500.f)
     .Ring(Level(kOutPalette.arc));
 
-static VirtualKnob trim = VirtualKnob(4, "Trim")
+static VirtualKnob trim = VirtualKnob(2, "Trim")
     .Linear(-12.f, 12.f)
     .Ring(Bipolar(kOutPalette.bipolar_pos,
                   kOutPalette.bipolar_neg,
                   kOutPalette.bipolar_center));
 
-static VirtualKnob dither = VirtualKnob(5, "Dither")
+static VirtualKnob dither = VirtualKnob(3, "Dither")
     .Linear(0.f, 2.f)
     .Ring(Level(kOutPalette.arc));
 
@@ -150,19 +167,19 @@ static Page eq_page   = Page(0).Knobs(ls_freq, ls_gain, mid_freq, mid_gain,
                                       hs_freq, hs_gain);
 static Page comp_page = Page(1).Knobs(thresh, ratio, attack, release,
                                       makeup, mix);
-static Page out_page  = Page(2).Knobs(drive, asym, ceiling, lim_rel,
-                                      trim, dither);
+static Page sat_page  = Page(2).Knobs(drive, sat_mix, emphasis, asym, bump);
+static Page out_page  = Page(3).Knobs(ceiling, lim_rel, trim, dither);
 
 /* Get our SDK surfaces and opt in to everything (no ParamLock, no CvMatrix —
  * this chain is stereo-linked with a single param set, nothing to record). */
 static AlchemyLab  hw;
 static ControlLoop loop    (hw);
-static Pager       pager   (hw.buttons[0], 3, kNumPots);
+static Pager       pager   (hw.buttons[0], 4, kNumPots);
 static Presets     presets (hw.seed.qspi);
 static Settings    settings(hw, &pager);
 
 /* ── Persistence: per-page mode/bypass state not carried by any knob ─────
- * Six single-byte fields; Deserialize clamps so a corrupt/foreign slot can
+ * Seven single-byte fields; Deserialize clamps so a corrupt/foreign slot can
  * never push an out-of-range index into the DSP. */
 struct ChainModes : public alchemy::Serializable
 {
@@ -171,9 +188,10 @@ struct ChainModes : public alchemy::Serializable
     uint8_t sat_bypass     = 0;
     uint8_t mid_q_index    = 0;
     uint8_t comp_character = 0;
-    uint8_t sat_type       = 0;
+    uint8_t sat_character  = 0;
+    uint8_t lim_bypass     = 0;
 
-    size_t SerializedSize() const override { return 6; }
+    size_t SerializedSize() const override { return 7; }
 
     void Serialize(uint8_t* out) const override
     {
@@ -182,7 +200,8 @@ struct ChainModes : public alchemy::Serializable
         out[2] = sat_bypass;
         out[3] = mid_q_index;
         out[4] = comp_character;
-        out[5] = sat_type;
+        out[5] = sat_character;
+        out[6] = lim_bypass;
     }
 
     bool Deserialize(const uint8_t* in) override
@@ -192,15 +211,20 @@ struct ChainModes : public alchemy::Serializable
         sat_bypass     = in[2] & 1u;
         mid_q_index    = in[3] % 3u;
         comp_character = in[4] % 3u;
-        sat_type       = in[5] & 1u;
+        sat_character  = in[5] % 3u;
+        lim_bypass     = in[6] & 1u;
         return true;
     }
 
-    /* MST2. Bumped from MST1 when byte 4 went from a 2-state soft-knee flag to
-     * a 3-state character index — and the Ratio knob's taper changed meaning at
-     * the same time, so old slots would restore a different ratio as well as a
-     * different mode. Both reasons independently require the bump. */
-    uint32_t SchemaHash() const override { return 0x4D535432u; }
+    /* MST3. Bumped from MST2 when saturation moved to its own page: byte 5 went
+     * from a 2-state shape toggle to a 3-state tape-machine index, byte 6 is
+     * new, and the knob layout of pages 3 and 4 changed underneath the Pager.
+     *
+     * Note the Pager invalidates old slots independently — its own SchemaHash
+     * folds in num_pages, which went 3 -> 4 — so pre-existing presets read as
+     * empty rather than restoring the wrong knob to the wrong parameter. That
+     * is the intended failure, but it does mean this release loses presets. */
+    uint32_t SchemaHash() const override { return 0x4D535433u; }
 };
 static ChainModes modes;
 
@@ -257,20 +281,24 @@ static void UpdateParams()
 {
     const uint8_t page = pager.Page();
 
+    /* B2 always bypasses the stage the current page owns. */
     if (b2_tap.tap) {
         b2_tap.tap = false;
         switch (page) {
-            case 0: modes.eq_bypass   = !modes.eq_bypass;   break;
-            case 1: modes.comp_bypass = !modes.comp_bypass; break;
-            default: modes.sat_bypass = !modes.sat_bypass;  break;
+            case 0:  modes.eq_bypass   = !modes.eq_bypass;   break;
+            case 1:  modes.comp_bypass = !modes.comp_bypass; break;
+            case 2:  modes.sat_bypass  = !modes.sat_bypass;  break;
+            default: modes.lim_bypass  = !modes.lim_bypass;  break;
         }
     }
+    /* B3 cycles the current page's secondary mode. The Output page has none. */
     if (b3_tap.tap) {
         b3_tap.tap = false;
         switch (page) {
             case 0: modes.mid_q_index    = (modes.mid_q_index + 1) % 3;    break;
             case 1: modes.comp_character = (modes.comp_character + 1) % 3; break;
-            default: modes.sat_type      = !modes.sat_type;                break;
+            case 2: modes.sat_character  = (modes.sat_character + 1) % 3;  break;
+            default: break;
         }
     }
 
@@ -289,11 +317,16 @@ static void UpdateParams()
         modes.comp_bypass != 0,
     });
 
-    mastering_dsp::SetOutput({
-        drive.Value(), asym.Value(), ceiling.Value(), lim_rel.Value(),
-        trim.Value(), dither.Value(),
-        modes.sat_type,
+    mastering_dsp::SetSat({
+        drive.Value(), sat_mix.Value(), emphasis.Value(),
+        asym.Value(), bump.Value(),
+        modes.sat_character,
         modes.sat_bypass != 0,
+    });
+
+    mastering_dsp::SetOutput({
+        ceiling.Value(), lim_rel.Value(), trim.Value(), dither.Value(),
+        modes.lim_bypass != 0,
     });
 }
 
@@ -310,16 +343,20 @@ static void RenderButtons(uint32_t t_ms)
     switch (page) {
         case 0:  page_color = kPageAmber; bypassed = modes.eq_bypass;   break;
         case 1:  page_color = kPageBlue;  bypassed = modes.comp_bypass; break;
-        default: page_color = kPageRed;   bypassed = modes.sat_bypass;  break;
+        case 2:  page_color = kPageGold;  bypassed = modes.sat_bypass;  break;
+        default: page_color = kPageRed;   bypassed = modes.lim_bypass;  break;
     }
     hw.leds.SetButtonPair(1, bypassed ? LedPanel::Scale(page_color, kBypassDim)
                                       : page_color);
 
+    /* The Output page has no secondary mode, so B3 shows the inert colour
+     * rather than a stale one from another page. */
     LedPanel::Rgb mode_color;
     switch (page) {
         case 0:  mode_color = kQColors   [modes.mid_q_index];    break;
         case 1:  mode_color = kCharColors[modes.comp_character]; break;
-        default: mode_color = kSatColors [modes.sat_type];       break;
+        case 2:  mode_color = kSatColors [modes.sat_character];  break;
+        default: mode_color = kModeInert;                        break;
     }
     hw.leds.SetButtonPair(2, mode_color);
 
@@ -369,7 +406,8 @@ int main()
 
     pager.SetPageColor(0, kPageAmber);
     pager.SetPageColor(1, kPageBlue);
-    pager.SetPageColor(2, kPageRed);
+    pager.SetPageColor(2, kPageGold);
+    pager.SetPageColor(3, kPageRed);
 
     /* Opting into default settings gestures and controls. */
     settings.UseBrightness();
@@ -391,6 +429,7 @@ int main()
         .Use(settings)
         .Use(eq_page)
         .Use(comp_page)
+        .Use(sat_page)
         .Use(out_page)
         .OnFrame(UpdateParams)
         .OnPoll(PollTaps)

@@ -66,6 +66,61 @@ inline float BiquadProcess(BiquadStateT<T>& s, const BiquadCoeffsT<T>& c, float 
     return float(y);
 }
 
+/**
+ * Ease one coefficient set toward another, in place.
+ *
+ * Interpolating raw direct-form coefficients is safe, and not by luck: the
+ * stability region |a1| < 2, |a1| - 1 < a2 < 1 is a triangle, hence convex, and
+ * a linear interpolation is a convex combination — so a blend of two stable
+ * biquads is always itself stable. (eq_control_test asserts this over 650k
+ * blends rather than taking the argument's word for it.)
+ *
+ * Used by both stages that redesign filters from a moving knob: the EQ eases
+ * per block toward its published bank, and the saturator does the same with its
+ * emphasis shelf and head bump.
+ */
+template <typename T>
+inline void LerpCoeffs(BiquadCoeffsT<T>& c, const BiquadCoeffsT<T>& t, T k)
+{
+    c.b0 += k * (t.b0 - c.b0);
+    c.b1 += k * (t.b1 - c.b1);
+    c.b2 += k * (t.b2 - c.b2);
+    c.a1 += k * (t.a1 - c.a1);
+    c.a2 += k * (t.a2 - c.a2);
+}
+
+/**
+ * Exact inverse of a biquad: swap numerator and denominator, renormalize so
+ * a0 is 1 again. H^-1(z) = A(z)/B(z).
+ *
+ * This is how the saturator builds its de-emphasis, and the reason is subtler
+ * than it first looks. MakeHighShelf(fc, -G) is *already* an exact inverse of
+ * MakeHighShelf(fc, +G) — the matched design turns out to be reciprocal by
+ * construction, agreeing with this function to 1e-15 (sat_response_test checks
+ * it). So on a static setting either route would do.
+ *
+ * What forces this one is the knob moving. The audio side eases the emphasis
+ * *coefficients* toward their published target once per block, and a lerp of
+ * two designs is not the design of the lerped parameter. Designing the cut from
+ * the eased knob value would therefore invert the wrong filter for the whole
+ * duration of a move — audible as the emphasis pair failing to cancel exactly
+ * when it is most obvious that it should. Inverting the coefficients the audio
+ * side actually holds is exact at every point of the ramp, and costs a divide
+ * instead of a design.
+ *
+ * Stable only if the source's zeros are inside the unit circle, i.e. the source
+ * is minimum phase — the inverse's poles are the original's zeros. Every design
+ * in this header is minimum phase over the ranges used here, and
+ * sat_response_test asserts it across the whole (fc, gain) grid rather than
+ * trusting the claim.
+ */
+template <typename T>
+inline BiquadCoeffsT<T> InvertBiquad(const BiquadCoeffsT<T>& c)
+{
+    const T g = T(1) / c.b0;
+    return { g, c.a1 * g, c.a2 * g, c.b1 * g, c.b2 * g };
+}
+
 using BiquadCoeffs = BiquadCoeffsT<float>;
 using BiquadState  = BiquadStateT<float>;
 

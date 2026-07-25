@@ -14,7 +14,6 @@ constexpr float kLog10Scale = 8.6858896f;    // 20/ln(10)  — dB from an amplit
 constexpr float kDbToLn     = 0.11512925f;   // ln(10)/20
 constexpr float kMinDetLin  = 3.1623e-5f;    // -90 dBFS
 constexpr float kLsb24      = 1.1920929e-7f; // 2^-23
-constexpr float kSatClamp   = 1.25f;
 
 // dB from a POWER quantity: 10*log10(p) = (10/ln10)*ln(p). The compressor's
 // detector works in mean power, so the sqrt that would turn power back into

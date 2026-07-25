@@ -43,9 +43,14 @@ void SilenceRestOfChain()
     c.character = mastering_dsp::kCompPrecise; c.bypass = true;
     mastering_dsp::SetComp(c);
 
+    mastering_dsp::SatParams s{};
+    s.drive_db = 0.f; s.mix = 1.f; s.emphasis = 0.f; s.asym = 0.f; s.bump = 0.f;
+    s.character = 0; s.bypass = true;
+    mastering_dsp::SetSat(s);
+
     mastering_dsp::OutParams o{};
-    o.drive_db = 0.f; o.asym = 0.f; o.ceiling_db = -0.1f; o.lim_release_ms = 100.f;
-    o.trim_db = 0.f; o.dither_lsb = 0.f; o.sat_type = 0; o.sat_bypass = true;
+    o.ceiling_db = -0.1f; o.lim_release_ms = 100.f;
+    o.trim_db = 0.f; o.dither_lsb = 0.f; o.lim_bypass = false;
     mastering_dsp::SetOutput(o);
 }
 

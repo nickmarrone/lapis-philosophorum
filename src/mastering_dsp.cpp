@@ -1,6 +1,6 @@
 /**
  * mastering_dsp.cpp — Stereo-linked mastering chain: EQ -> Compressor ->
- * Saturation -> Limiter -> Output Trim -> TPDF Dither.
+ * Tape Saturation -> Limiter -> Output Trim -> TPDF Dither.
  *
  * Chain state lives in an anonymous namespace at file scope, mirroring the
  * eq_dsp pattern from the template's prior EQ-only DSP file. All unit
@@ -80,16 +80,6 @@ bool     eq_smooth_primed_   = false;
 bool     eq_designed_valid_  = false;
 bool     eq_designed_bypass_ = false;
 
-template <typename T>
-inline void LerpCoeffs(BiquadCoeffsT<T>& c, const BiquadCoeffsT<T>& t, T k)
-{
-    c.b0 += k * (t.b0 - c.b0);
-    c.b1 += k * (t.b1 - c.b1);
-    c.b2 += k * (t.b2 - c.b2);
-    c.a1 += k * (t.a1 - c.a1);
-    c.a2 += k * (t.a2 - c.a2);
-}
-
 Compressor comp_;
 Saturator  sat_;
 Limiter    lim_;
@@ -104,6 +94,7 @@ void Init(float sample_rate)
 {
     fs_ = sample_rate;
     comp_.InitSidechain(fs_);   // three fixed sidechain high-passes, designed once
+    sat_.Init(fs_);             // sets the DC-blocker pole and the 5 ms param ease
 }
 
 /**
@@ -221,10 +212,21 @@ void SetComp(const CompParams& p)
     comp_.Configure(p, fs_);
 }
 
-void SetOutput(const OutParams& p)
+/**
+ * Control rate. Unlike SetComp this one does design filters — the emphasis
+ * shelf and the head bump both move with a knob — so the dirty check and the
+ * double-buffered handoff live inside Saturator::Configure, for the same
+ * reasons SetEq needs them. Everything else it writes is a scalar the audio
+ * side eases at 5 ms.
+ */
+void SetSat(const SatParams& p)
 {
     sat_.Configure(p, fs_);
-    lim_.Configure(p.ceiling_db, p.lim_release_ms, fs_);
+}
+
+void SetOutput(const OutParams& p)
+{
+    lim_.Configure(p.ceiling_db, p.lim_release_ms, p.lim_bypass, fs_);
     trim_lin_ = DbToLin(p.trim_db);
     dith_[0].amp = dith_[1].amp = p.dither_lsb * kLsb24;
 }
@@ -265,6 +267,10 @@ void Process(daisy::AudioHandle::InputBuffer  in,
     const auto& hs_c     = eq_run_.hs;
     const bool  eq_bypass = eq_run_.bypass;
 
+    // Same once-per-block pickup for the saturator's emphasis and bump, whose
+    // coefficients move with a knob exactly as the EQ's do.
+    sat_.BeginBlock();
+
     for (size_t i = 0; i < n; i++)
     {
         float l = in[0][i];
@@ -288,8 +294,7 @@ void Process(daisy::AudioHandle::InputBuffer  in,
 
         comp_.ProcessSample(l, r); // handles its own bypass; detector always runs
 
-        l = sat_.ProcessSample(l, 0);
-        r = sat_.ProcessSample(r, 1);
+        sat_.ProcessSample(l, r);  // bypass takes the delayed dry, never a branch
 
         lim_.ProcessSample(l, r);
 

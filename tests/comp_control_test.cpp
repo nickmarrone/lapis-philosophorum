@@ -43,9 +43,14 @@ void SilenceRestOfChain()
     e.bypass = true;
     mastering_dsp::SetEq(e);
 
+    mastering_dsp::SatParams s{};
+    s.drive_db = 0.f; s.mix = 1.f; s.emphasis = 0.f; s.asym = 0.f; s.bump = 0.f;
+    s.character = 0; s.bypass = true;
+    mastering_dsp::SetSat(s);
+
     mastering_dsp::OutParams o{};
-    o.drive_db = 0.f; o.asym = 0.f; o.ceiling_db = -0.1f; o.lim_release_ms = 100.f;
-    o.trim_db = 0.f; o.dither_lsb = 0.f; o.sat_type = 0; o.sat_bypass = true;
+    o.ceiling_db = -0.1f; o.lim_release_ms = 100.f;
+    o.trim_db = 0.f; o.dither_lsb = 0.f; o.lim_bypass = false;
     mastering_dsp::SetOutput(o);
 }
 
@@ -344,12 +349,17 @@ void TestChainLatency(Report& r)
             if (found < 0 && std::fabs(o_l[i]) > 1e-4f) found = int(b * kBlock + i);
     }
 
-    // 48 samples, all of it the limiter's lookahead. The developer guide's
-    // latency budget caps the whole chain at 64 samples (~1.3 ms); the
-    // compressor deliberately spends none of it, and cannot — its bypass takes
-    // the same-sample dry signal, so a delay line there would make bypass a
-    // click. If this number moves, that budget is what to check it against.
-    r.Check(found == 48, "impulse emerges at sample 48 (limiter lookahead only)",
+    // 63 samples: 48 of limiter lookahead plus 15 for the saturator's 2x
+    // oversampling pair. The developer guide's latency budget caps the whole
+    // chain at 64 samples (~1.3 ms) and earmarked the spare 16 for exactly this
+    // stage, so the chain is now one sample under its ceiling.
+    //
+    // The compressor still spends none of it, and cannot — its bypass takes the
+    // same-sample dry signal, so a delay line there would make bypass a click.
+    // The saturator can because its bypass takes a *matched-delay* dry, which
+    // is why this number does not depend on any bypass state. If it moves,
+    // that budget is what to check it against.
+    r.Check(found == 63, "impulse emerges at sample 63 (limiter 48 + saturator 15)",
             Fmt("measured %.0f samples = %.2f ms", double(found), double(found) / 48.0));
     r.Check(found <= 64, "within the 64-sample chain budget",
             Fmt("%.0f of 64 samples used", double(found)));
