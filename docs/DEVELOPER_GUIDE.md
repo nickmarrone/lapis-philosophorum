@@ -341,7 +341,8 @@ for (size_t i = 0; i < n; i++) {
     comp_.ProcessSample(l, r);     // stereo-linked, handles own bypass
     l = sat_.ProcessSample(l, 0);
     r = sat_.ProcessSample(r, 1);
-    l *= trim_lin_;  r *= trim_lin_;
+    trim_run_ += trim_ease_ * (trim_tgt_ - trim_run_);   // 5 ms, per sample
+    l *= trim_run_;  r *= trim_run_;
     lim_.ProcessSample(l, r);      // stereo-linked; the last word on level
     l += dith_[0].Sample();  r += dith_[1].Sample();
 
@@ -740,6 +741,14 @@ zero state is stuck at zero** — any new seed must be nonzero.
   which is also the standard mastering topology: push in for loudness and
   the ceiling still holds. The cost is that trim can no longer raise the
   output above the ceiling at all, which is the point.
+- **Trim is eased at 5 ms**, like every other scalar that multiplies the
+  audio directly (the compressor's makeup and mix, the saturator's drive
+  and mix). It used to be written straight from the control frame, and
+  being a plain gain is exactly why that was wrong rather than merely
+  inconsistent: a raw gain step *is* the click, with nothing downstream to
+  smooth it. At the pot's 8 ms smoothing a brisk sweep of the ±12 dB range
+  delivers ~2 dB per 16 ms frame, i.e. a 26 % discontinuity in one sample —
+  measured at 9.4e-3 against a program slew of 5.5e-3 before the ease.
 - **Dither is post-trim**, which is correct — dither belongs at the final
   quantisation point, and scaling it afterward would defeat it.
 - **The compressor detects post-EQ**, so EQ moves change how hard the
@@ -968,6 +977,19 @@ Things that will bite quietly if broken:
     holding**, not from the knob. `InvertBiquad(run_.emph)` in
     `BeginBlock()` after the lerp is exact at every point on a ramp;
     designing the cut from the parameter is not. (§4.2)
+17. **Every scalar that multiplies the audio directly is eased on the
+    audio side** — the compressor's makeup and mix, the saturator's drive
+    and mix, and the output trim. A plain gain written straight from the
+    control frame has nothing downstream to smooth it, so the step *is* the
+    click. Trim was the exception until the chain harness measured it.
+    (§4.3, §9.1)
+18. **Never ease a quantity and its reciprocal independently.** Both
+    endpoints are right and every point between them is wrong: the
+    saturator's `inv_drive_` is derived as `1.f / drive_`, because easing
+    it toward `1/D` alongside `drive_` easing toward `D` put the midpoint
+    of a 0→24 dB move at a *product* of 4.5, i.e. +13 dB of small-signal
+    gain on the one knob whose contract is that it does not change level.
+    (§4.2, §9.1)
 
 ---
 
@@ -977,7 +999,9 @@ Things that will bite quietly if broken:
 lookahead and 15 for the saturator's half-band pair.
 `comp_control_test`'s `TestChainLatency` measures it end to end rather than
 asserting it from prose — this section has gone stale once already, and now
-something fails when it does.
+something fails when it does. `chain_test` goes further and measures it in
+**all sixteen bypass combinations**, which is what invariant 14 actually
+claims and what one measurement of one configuration cannot establish.
 
 For the chain as a whole, **80 samples (~1.67 ms) is the ceiling** any stage
 may claim, so **5 samples remain**. There is no delay compensation in a
@@ -1029,16 +1053,17 @@ branch, so its 15 samples are present whether or not the stage is engaged
 ## 9. Testing
 
 ```sh
-make test          # build and run all six host harnesses
+make test          # build and run all eight host harnesses
 make test-golden   # regenerate the golden CSVs, deliberately
 ```
 
 Host-only, no cross-toolchain: `tests/` compiles `dsp_biquad.h`,
-`dsp_compressor.h` and `dsp_saturation.h` directly, and `mastering_dsp.cpp`
-against a six-line `AudioHandle` stub. `tests/test_report.h` holds the
-shared assert-and-print framework; `eq_test_common.h`, `comp_test_common.h`
-and `sat_test_common.h` hold the measurement support for their respective
-stages.
+`dsp_compressor.h`, `dsp_saturation.h` and `dsp_limiter.h` directly, and
+`mastering_dsp.cpp` against a six-line `AudioHandle` stub.
+`tests/test_report.h` holds the shared assert-and-print framework;
+`eq_test_common.h`, `comp_test_common.h`, `sat_test_common.h`,
+`lim_test_common.h` and `chain_test_common.h` hold the measurement support
+for their respective scopes.
 
 - `tests/eq_response_test.cpp` — sweeps the realized filter against the
   *analog prototype* with no prewarping (prewarping would hide the very
@@ -1067,6 +1092,80 @@ stages.
 - `tests/sat_control_test.cpp` — the real `SetSat` cadence: the 62.5 Hz
   reconfigure regression (invariant 15), knob-sweep zipper, character
   switching, and preset recall.
+- `tests/lim_response_test.cpp` — the limiter alone, reading the signal
+  *before* the safety clamp: zero overshoot across six programs, transients
+  shorter than the window, ceiling met rather than undershot, latency,
+  bypass, release calibration, dBTP conformance, and the window sizing.
+- `tests/chain_test.cpp` — the assembled chain, and the only harness that
+  can see the seams. See §9.1.
+
+### 9.1 The chain harness
+
+The other seven each drive one stage. That is the right way to measure
+what a stage *does*, and it is structurally blind to what happens between
+stages, so `chain_test.cpp` asks only questions none of them can:
+
+- Latency is 75 samples in **all sixteen** bypass combinations, measured by
+  correlating a band-limited noise burst. Not by finding the peak of an
+  impulse response — that is only the delay when the chain is a pure delay,
+  and the half-band's outermost tap puts the *first* nonzero sample 15
+  samples early.
+- The ceiling holds with the whole chain in front of it, at settings where
+  the limiter really is the binding constraint. (`Extreme()` is not such a
+  setting and it is instructive why: at 24 dB of drive the shaper asymptote
+  caps the saturator's output at ~0.045, so the chain leaves 13 dB of
+  headroom and every ceiling assertion passes without the limiter engaging.)
+- **An independent true-peak meter.** `TruePeakDb` reconstructs with the
+  same 4x half-band the limiter detects with, so it can only ever confirm
+  the limiter used its own detector consistently. `SincTruePeakDb`
+  reconstructs at 8x with a 129-tap Blackman-windowed sinc in double,
+  sharing nothing with the DSP. The gap between them is the number worth
+  knowing: **0.14 dB**, which is how much real inter-sample peak a 4x
+  detector structurally cannot see, so a −0.1 dB ceiling can touch
+  +0.04 dBFS on HF-dense program. That is conformant — 4x is what
+  BS.1770-4 specifies — and the check bounds the blind spot rather than
+  pretending the ceiling holds through it.
+- The chain's **applied gain is continuous**, derived as
+  `out[n+75] / in[n]` with everything but the compressor bypassed so the
+  chain is a pure gain, and probed with a square wave so `|in|` is constant
+  (dividing by a sine near its zero crossings manufactures exactly the
+  discontinuities this is looking for).
+- **Parameter moves.** Both instruments are self-calibrating, because a
+  hard-coded "a step above 1.3e-3 is a click" is really an assertion about
+  the output level that happened to be current when it was written.
+  Envelope excursions are judged against the loudest of nine rest points
+  across the knob's own travel — nine rather than two because Asym is
+  loudest in the *middle* and a two-point bar would convict it of an
+  overshoot that is simply what the knob does. Steps are judged against the
+  probe tone's own slew at the level the run actually reached.
+- Every move runs as a 12-frame sweep **and** a 1-frame snap. The snap is
+  not a synthetic worst case here: the pots are smoothed at tau = 8 ms and
+  read at 1 kHz, so a value covers 88 % of a jump inside one control frame,
+  and preset recall hands the DSP a genuine step. A stage whose easing only
+  holds up under a slow sweep passes the first and fails the second.
+
+Two traps this harness had to learn the hard way, both worth knowing
+before adding to it:
+
+- **Warm the true-peak meter.** `TruePeak4x` boots with a zeroed 16-sample
+  history, so a meter started mid-passage sees a step and rings — 2.6 %,
+  0.22 dB of Gibbs overshoot, which is larger than any ceiling violation
+  worth hunting and looks exactly like a limiter that has drifted.
+- **Reaching a branch is not the same as covering it.** The gain-continuity
+  test originally used a 2000 ms release over an 8 s window, which never
+  brought the envelope down to the 0.01 dB cutover it was aimed at, and so
+  passed against a chain that had a 0.115 % step sitting just outside the
+  window.
+
+`Boot()` settles until the chain *measures* quiet rather than for a fixed
+time. `mastering_dsp` keeps chain state at file scope and `Init()` does not
+clear it, so there is no way to hand a test a fresh chain; a settle sized
+for the slowest state in here (Glue's 4 s slow reservoir) would otherwise
+dominate the runtime of every other scenario. Two residues never reach
+zero on a host and are expected: the saturator's mix ease approaches zero
+asymptotically, and with `asym` off centre the shaper emits a DC term the
+blocker drives to ~1e-29. Both are literally zero on hardware, where
+`FPSCR.FZ` and `FPU->FPDSCR` are set.
 
 Measurement in the saturation harnesses is by **Hann-windowed single-bin
 DFT**, not FFT. A saturator's output has predictable support — harmonic

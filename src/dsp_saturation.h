@@ -51,6 +51,8 @@
  * Gain compensation divides by the same knee*drive that multiplied the input,
  * so small-signal gain is exactly unity at every drive setting and every
  * character. Drive changes how hard the tape is hit, not how loud the module is.
+ * That holds while the knob is MOVING as well, which takes one deliberate
+ * choice rather than none — see the note over inv_drive_ in ProcessSample.
  */
 
 #pragma once
@@ -102,8 +104,17 @@ struct Saturator {
             adaa_x1_[ch] = 0.f; adaa_F1_[ch] = 0.f;   // F(0) = ln(cosh 0) = 0
             dc_x1_[ch] = dc_y1_[ch] = 0.f;
         }
-        dc_r_      = 1.f - (2.f * 3.14159265f * 5.f) / fs;
-        param_ease_ = MsToCoef(5.f, fs);
+        dc_r_       = 1.f - (2.f * 3.14159265f * 5.f) / fs;
+        param_ease_ = MsToCoef(5.f,  fs);
+        asym_ease_  = MsToCoef(30.f, fs);   // see ProcessSample
+
+        // Force the next Configure() to publish. Init() is reachable from
+        // Configure() on a sample-rate change, and without this the dirty check
+        // there would see unchanged emphasis/bump values, return early, and
+        // leave the audio side holding coefficients designed for the OLD rate.
+        // Unreachable on the module, where Init() runs once — but it is one
+        // store to close a trap that reads as correct.
+        designed_valid_ = false;
     }
 
     /**
@@ -125,7 +136,6 @@ struct Saturator {
 
         const float drive_lin = DbToLin(Clampf(p.drive_db, 0.f, 24.f));
         t_drive_    = k.knee * drive_lin;
-        t_inv_drive = 1.f / t_drive_;
         // Bypass is not a branch — it is a mix target of zero. The audio side
         // eases mix at 5 ms, so toggling bypass crossfades to the delayed dry
         // instead of stepping to it. A hard switch would step by however much
@@ -223,11 +233,32 @@ struct Saturator {
     void ProcessSample(float& l, float& r)
     {
         // Shared eased scalars — computed once, used by both channels.
-        drive_    += param_ease_ * (t_drive_    - drive_);
-        inv_drive_+= param_ease_ * (t_inv_drive - inv_drive_);
-        mix_      += param_ease_ * (t_mix_      - mix_);
-        asym_     += param_ease_ * (t_asym_     - asym_);
-        asym_sh_  += param_ease_ * (t_asym_sh_  - asym_sh_);
+        //
+        // inv_drive_ is DERIVED from drive_, never eased alongside it. Easing
+        // the two independently is the natural-looking version and it breaks
+        // the stage's central claim: the compensation only cancels the drive
+        // when their product is 1, and two one-poles converging to D and 1/D
+        // from a common start do not keep that product at 1 on the way. A step
+        // from 0 to 24 dB of drive put the midpoint at 8.42 * 0.53 = 4.5,
+        // i.e. **+13 dB of small-signal gain** for the length of the ease —
+        // measured at +12.5 dB through the whole chain, which is a level jump
+        // on a knob whose entire point is that it does not change level. One
+        // divide per sample (~14 cycles on the M7) buys an exact identity.
+        drive_    += param_ease_ * (t_drive_ - drive_);
+        inv_drive_ = 1.f / drive_;          // drive_ >= knee_min = 0.8, never 0
+        mix_      += param_ease_ * (t_mix_  - mix_);
+
+        // The offset pair gets its own, slower ease, and that is not cosmetic
+        // either. asym_ is added at the shaper's input while asym_sh_ is
+        // subtracted from the down-sampler's output, so the compensation leads
+        // the thing it compensates by the half-band's group delay — 7.5 base
+        // samples, a fraction of a sample, not something a delay line fixes
+        // tidily. What is left is a DC error of (rate * 7.5), so the cure is to
+        // hold the rate down: at 5 ms a full-travel snap left 0.018 of DC (a
+        // -35 dBFS thump through the DC blocker), at 30 ms it is a sixth of
+        // that. Asym is a flavour control; nobody can hear it arrive 25 ms late.
+        asym_     += asym_ease_ * (t_asym_    - asym_);
+        asym_sh_  += asym_ease_ * (t_asym_sh_ - asym_sh_);
 
         l = Channel(l, 0);
         r = Channel(r, 1);
@@ -298,10 +329,10 @@ struct Saturator {
     BiquadCoeffs deemph_;
     bool         run_primed_ = false;
 
-    float t_drive_ = 1.f, t_inv_drive = 1.f, t_mix_ = 1.f;
+    float t_drive_ = 1.f, t_mix_ = 1.f;
     float t_asym_ = 0.f, t_asym_sh_ = 0.f;
     float drive_ = 1.f, inv_drive_ = 1.f, mix_ = 1.f, asym_ = 0.f, asym_sh_ = 0.f;
-    float param_ease_ = 0.01f, dc_r_ = 0.999f;
+    float param_ease_ = 0.01f, asym_ease_ = 0.002f, dc_r_ = 0.999f;
 
     HalfBandUp   up_[2];
     HalfBandDown down_[2];
