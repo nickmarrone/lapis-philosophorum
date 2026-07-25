@@ -106,6 +106,9 @@ src/
 ├── dsp_halfband.h         2x polyphase half-band up/down + matched dry delay
 ├── dsp_limiter.h          brickwall limiter
 ├── dsp_dither.h           xorshift32 TPDF generator
+├── dsp_analysis.h         band split + envelope followers (CV telemetry, not signal path)
+├── mod_source.h           CV modulation engine — mode map and public seam
+├── mod_source.cpp         CV modulation engine — the five generators
 └── mastering_palette.h    LED colour constants
 
 tools/
@@ -121,6 +124,16 @@ stage, the call overhead would be a meaningful fraction of the budget.
 `dsp_common.h` exists solely so those headers can share namespace-scope
 `constexpr`/`inline` definitions without redefinition collisions when
 several of them land in one translation unit.
+
+`mod_source.*` is the one exception to the header-only rule, and
+deliberately so: it runs on the control thread at 1 kHz, not per sample, so
+inlining buys nothing, and a real translation unit keeps the five
+generators out of every file that includes the header. It **includes
+nothing from libDaisy or the alchemy-sdk** — only `<cstdint>` and
+`<cmath>` — which is the same invariant `dsp_biquad.h` holds and is what
+lets `tests/` link it directly. Everything about actual jacks (ADC
+thresholds, DG411 routing, DAC cadence) lives in `mastering.cpp`;
+`mod_source` only ever produces volts.
 
 ---
 
@@ -242,22 +255,27 @@ Knob values are persisted for free: `Pager` is itself a `Serializable`
 holding the per-`(page, pot)` stored values, and `presets.Manage(pager)`
 registers it.
 
-What isn't carried by any knob is the seven bytes of mode/bypass state,
-which get their own `Serializable`:
+What isn't carried by any knob is the mode/bypass state, which gets its own
+`Serializable`:
 
 ```cpp
 struct ChainModes : public alchemy::Serializable
 {
     uint8_t eq_bypass, comp_bypass, sat_bypass;         // bytes 0-2
     uint8_t mid_q_index, comp_character, sat_character; // bytes 3-5
-    uint8_t lim_bypass;                                 // byte 6 — appended
+    uint8_t lim_bypass;                                 // byte 6
+    uint8_t mod_secondary[6];                           // bytes 7-12 — appended
 
-    size_t   SerializedSize() const override { return 7; }
+    size_t   SerializedSize() const override { return 7 + kNumModes; }
     void     Serialize(uint8_t* out) const override;
     bool     Deserialize(const uint8_t* in) override;   // clamps every field
-    uint32_t SchemaHash() const override { return 0x4D535433u; }
+    uint32_t SchemaHash() const override { return 0x4D535434u; }
 };
 ```
+
+`mod_secondary` is one B3 index **per modulation mode**, not one global
+index, so each mode remembers its own — leave Clocked on ÷2, visit Euclid,
+come back, and it is still ÷2. Slot 0 (Off) is unused and always reads 0.
 
 Two things to note:
 
@@ -265,9 +283,13 @@ Two things to note:
 compressor character and the tape character; `& 1u` for the booleans. A
 corrupt or foreign slot can therefore never push an out-of-range index
 into `kMidQTable[]`, `kSatChars[]` or into the DSP. This is the cheap,
-correct discipline for flash-backed state — don't relax it.
+correct discipline for flash-backed state — don't relax it. The
+`mod_secondary` clamp takes its modulus from
+`mod_source::SecondaryZones(mode)` rather than a literal, because the zone
+count differs per mode (Clocked has 5, Euclid 4, the rest 3) — a fixed
+modulus would be wrong for four of the six.
 
-**`SchemaHash()` is a manual constant** (`0x4D535433` = "MST3"). The
+**`SchemaHash()` is a manual constant** (`0x4D535434` = "MST4"). The
 preset store XORs every managed component's hash and stamps slots with the
 result; a mismatch on load makes the slot read as empty rather than
 restoring misaligned bytes. **If you change `ChainModes`'s field layout or
@@ -275,7 +297,32 @@ size, bump this constant.** If you forget, old slots will deserialize into
 the new layout and produce garbage — the one failure mode the mechanism
 exists to prevent.
 
-It was last bumped MST2 → MST3 when the saturation moved to its own page:
+It was last bumped MST3 → MST4 when the CV modulation source added the
+`mod_secondary` array. That bump carried a trap worth remembering: unlike
+the previous one, `Pager::SchemaHash()` did **not** change — page count
+stayed at 4 and pot count at 6 — so the only thing invalidating old slots
+was this constant. Because `Presets::SchemaHash()` is the XOR of every
+managed component, that is enough: `HasValid` fails and nothing is
+deserialized, `Pager` included. But then `Pager` falls back to its default
+stored value of `0.5`, and `0.5` on K6's `Selector(6)` is `MultiLfo` — so
+the module would have booted with six LFOs already driving the CV jacks.
+`main()` guards it:
+
+```cpp
+const bool restored = presets.BootLoad();
+...
+if (!restored) {
+    /* settle the ADC first, then: */
+    pager.SetStored(3, 5, 0.f, phys);   // force K6 to Off
+}
+```
+
+The ADC settle matters — `SetStored` re-arms pot catch against the physical
+position, and a zeroed `phys[]` would let K6 grab on the first frame. **Any
+future selector knob whose zero position is the safe one needs the same
+guard**; the Pager default is 0.5, not 0.
+
+An earlier bump, MST2 → MST3, was for when the saturation moved to its own page:
 the struct grew a `lim_bypass` byte and `sat_type` became a three-state
 `sat_character`. That release also took `Pager` from three pages to four,
 which changes `Pager::SchemaHash()` independently — either bump alone
@@ -309,13 +356,65 @@ linked. This project deliberately omits:
 
 - **`ParamLock`** — no automation recording. A stereo-linked mastering
   chain has one parameter set; there is nothing to record per-voice.
-- **`CvMatrix` / `CvRouter`** — no CV modulation. Every knob is a direct,
-  unlatched control.
+- **`CvMatrix` / `CvRouter`** — **no CV *into* any knob.** Every knob is a
+  direct, unlatched control; no `VirtualKnob` here calls `.Cv(...)`.
 
-Consequently `hw.cv[]` is read by `ControlLoop` into its buffer and never
-used. If you want CV back, construct a `CvRouter`, `loop.Use()` it, and
-the `VirtualKnob` CV path activates — but note that adding a
-`Serializable` surface to the preset payload invalidates existing slots.
+That last one is worth stating precisely, because the CV jacks are far
+from unused. They are a modulation *source* (§3.7) — the jacks are
+outputs in four of the six modes, and where they are inputs the firmware
+reads them itself through `CvGate` rather than through the `VirtualKnob`
+CV path. `loop.Cv()` is consumed directly in `PollModulation`.
+
+If you want CV *modulating knobs* back, construct a `CvRouter`,
+`loop.Use()` it, and the `VirtualKnob` CV path activates — but note that
+it would then contend with the modulation source for the same six jacks,
+and that adding a `Serializable` surface to the preset payload invalidates
+existing slots.
+
+### 3.7 The CV modulation source
+
+`mod_source.cpp` is the generator; `mastering.cpp` is the hardware seam.
+The split is strict — the engine only ever produces volts and a
+`bool is_output[6]`, and knows nothing about ADCs, DG411 switches or DACs.
+
+**Two DAC update rates, because the six jacks are not the same hardware.**
+
+| Jacks | Backing DAC | Rate | Cost |
+|---|---|---|---|
+| J7, J8 (4, 5) | STM32 internal DAC1 | every 1 ms poll | one register write |
+| J3–J6 (0–3) | MCP4728 over I²C | every 4th poll (250 Hz) | ~430 µs, ~11 % of the main thread |
+
+This is why the ramp and the stepped-random output live on J7/J8 in
+Clocked mode, and why two of the five Euclidean gates do: their
+discontinuities are what stepping shows up in. `kMcpFlushTicks` is the one
+number to turn if the gates on J4–J6 feel loose on hardware — it trades
+main-thread load against up to 4 ms of gate jitter. Audio is in the SAI
+ISR and is unaffected either way.
+
+Even at 250 Hz this only works because of `SetMcpCvOutVolts` (invariant
+20). Per-jack `SetCvOutVolts` in a loop would be ~1.7 ms.
+
+**Routing is applied only on a mode change.** `ApplyModRouting` drives
+every DAC to 0 V *before* touching a DG411, so a jack never connects to a
+stale voltage from the previous mode. The switches are expander writes, so
+doing this per tick would be absurd; `mod_routed_mode` starts at `0xFF` so
+the first poll after boot always establishes a known routing.
+
+**Edge detection runs on all six channels but only two are consulted.** A
+jack being driven as an output is still read by the ADC — we see our own
+DAC voltage — so output jacks generate spurious edges in the detector.
+Harmless, because `ClockJack()`/`ResetJack()` return `0xFF` for modes with
+no such input and the masks simply never match.
+
+**Analysis reads telemetry at tick rate, not at the 16 ms frame.** With a
+1 ms follower the CV should track transients; a 62.5 Hz refresh would throw
+most of that away. It is six float loads.
+
+`PollControls` exists only because `ControlLoop` takes a single `OnPoll`
+hook: it calls `PollTaps` and then `PollModulation`. Both want the same
+1 ms cadence and neither depends on the other. Note that `OnPoll` and
+`OnFrame` run on the same thread, sequentially inside `loop.Tick()`, so
+nothing here needs synchronising against `UpdateParams`.
 
 ---
 
@@ -900,7 +999,30 @@ so no preset changes are needed as long as the pot count is unchanged.
    `Configure` from the matching setter, splice into `Process()`.
 4. Keep it running when bypassed — gate the output, not the computation.
 
-Header-only means no `CPP_SOURCES` edit.
+Header-only means no `CPP_SOURCES` edit. A stage that is *not* header-only
+does need one — `src/mod_source.cpp` is currently the only such file, and
+forgetting it produces a wall of `dangerous relocation: unsupported
+relocation` at link time rather than an obvious "no such file".
+
+### Add a CV modulation mode
+
+1. Add the enum value to `mod_source::Mode` in `mod_source.h`, **before**
+   `kCount`. `ChainModes::mod_secondary` is sized from `kCount`, so this
+   changes the preset layout — bump `ChainModes::SchemaHash()`.
+2. Return its B3 zone count from `SecondaryZones()`. Returning 1 makes the
+   tap a no-op.
+3. If it needs a clock or reset jack, add it to `ModSource::ClockJack()` /
+   `ResetJack()`. `JackIsOutput()` is derived from those two, so routing,
+   the `Frame`, and `mastering.cpp`'s `ApplyModRouting` all follow with no
+   further edits.
+4. Write `TickYourMode(Frame&)` and add it to the `switch` in `Tick()`.
+5. Add a colour to `kModeSnaps` and `kModeColors` in
+   `mastering_palette.h`, and re-space every `position` — they are zone
+   centres, `(i + 0.5) / kCount`.
+6. Add a section to `mod_source_test.cpp`. Measure the property the mode
+   promises, not the code you just wrote.
+
+The knob itself needs no edit: K6 is `Selector(Mode::kCount)`.
 
 ### Add a fifth page
 
@@ -968,11 +1090,17 @@ slots stop loading — by design.
 
 ### Add a gain-reduction meter
 
-`CompGainReductionDb()` already returns a positive dB figure.
-`VirtualKnob::Overdraw(fn, ctx)` paints a callback on top of a knob's
-declarative ring after `PerfRenderer` runs — the `kick` example in the SDK
-does exactly this for an envelope meter. The compressor page's threshold
-or makeup ring is the natural host.
+`CompGainReductionDb()` and `LimGainReductionDb()` already return positive
+dB figures, and `ReadTelemetry()` adds the three band envelopes plus
+broadband level. `VirtualKnob::Overdraw(fn, ctx)` paints a callback on top
+of a knob's declarative ring after `PerfRenderer` runs — the `kick` example
+in the SDK does exactly this for an envelope meter. The compressor page's
+threshold or makeup ring is the natural host.
+
+Note the band envelopes only run when the Analysis modulation mode is
+selected — `Analyzer` self-gates on its enable flag, set from
+`mastering_dsp::SetAnalysis()`. A meter that wants them unconditionally
+must enable it unconditionally and accept the per-sample cost.
 
 ---
 
@@ -1039,6 +1167,28 @@ Things that will bite quietly if broken:
     not change level. The reference chord has the same trap with the same
     shape, so it is derived the same way; what makes the transcendental
     affordable is a dirty check on `drive_`, not an ease. (§4.2, §9.1)
+19. **`mod_source.*` includes nothing from libDaisy or the alchemy-sdk.**
+    `<cstdint>` and `<cmath>` only, the same invariant `dsp_biquad.h`
+    holds. It is what lets `mod_source_test` link the engine with no
+    stubbing, and the harness is the only thing that will catch a
+    generator regression — none of this is audible in the audio path.
+    (§2, §9)
+20. **Never drive an MCP4728 jack with per-jack `SetCvOutVolts` in a
+    loop.** Each call rewrites all four channels from the shadow *and*
+    pulses LDAC, so four jacks cost four complete I²C transactions —
+    ~1.7 ms at 400 kHz, which does not fit a 1 ms poll. Use
+    `SetMcpCvOutVolts`, which does one `WriteAll` and one `PulseLdac` for
+    all four. (§3)
+21. **Unipolar Eurorack clocks and gates need `CvGate`, not `CvEdge`.**
+    0 V reads ~0.5 here and +5 V reads ~0.75, so `CvEdge`'s symmetric
+    0.30/0.70 defaults catch every rise and never a fall — the "+5 V
+    triggers, 0 V holds forever" failure its own header warns about.
+    `CvGate`'s 0.55/0.65 sit above the rest point and release cleanly.
+22. **A selector knob whose zero position is the safe one needs a boot
+    guard.** `Pager`'s default stored value is `0.5`, not `0` — so on any
+    boot where `presets.BootLoad()` returns false the knob comes up
+    mid-range. K6 forces itself to Off via `Pager::SetStored`, after
+    settling the ADC so pot-catch re-arms against a real position. (§3.5)
 
 ---
 
@@ -1102,17 +1252,33 @@ branch, so its 15 samples are present whether or not the stage is engaged
 ## 9. Testing
 
 ```sh
-make test          # build and run all eight host harnesses
+make test          # build and run all nine host harnesses
 make test-golden   # regenerate the golden CSVs, deliberately
 ```
 
 Host-only, no cross-toolchain: `tests/` compiles `dsp_biquad.h`,
-`dsp_compressor.h`, `dsp_saturation.h` and `dsp_limiter.h` directly, and
-`mastering_dsp.cpp` against a six-line `AudioHandle` stub.
+`dsp_compressor.h`, `dsp_saturation.h`, `dsp_limiter.h` and
+`dsp_analysis.h` directly, `mastering_dsp.cpp` against a six-line
+`AudioHandle` stub, and `mod_source.cpp` against nothing at all.
 `tests/test_report.h` holds the shared assert-and-print framework;
 `eq_test_common.h`, `comp_test_common.h`, `sat_test_common.h`,
 `lim_test_common.h` and `chain_test_common.h` hold the measurement support
 for their respective scopes.
+
+`mod_source_test.cpp` is the outlier and needs no common header: it drives
+the modulation engine at its real 1 kHz control-tick rate and measures the
+properties each mode actually promises — clock lock across all five ratios,
+phase spread by cross-correlation, non-octave LFO ratios, the divergence
+axis of the smooth random by pairwise correlation, Euclidean maximal
+evenness, and the analysis band split.
+
+It has already earned its keep. The first Narrow ratio set spanned
+1.0–0.44 and quietly contained `0.87 / 0.44 = 1.977` — a 1.1 % octave, in
+the one mode whose entire purpose is that no two LFOs lock into a common
+downbeat. Nothing about that is audible in the audio path, and no amount
+of listening to the module would have found it. The set now spans only
+1.75:1, so no pair *can* reach 2×, and the test sweeps every ordered pair
+in all three sets against 2×/4×/8×.
 
 - `tests/eq_response_test.cpp` — sweeps the realized filter against the
   *analog prototype* with no prewarping (prewarping would hide the very

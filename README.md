@@ -28,16 +28,54 @@ currents. Four pages sharing six knobs:
   whole drive range — drive trades peaks for harmonics, not for level.
 - **Page 4 — Output (red).** Brickwall limiter (ceiling, release),
   followed by output trim and TPDF dither depth (0–2 LSB at 24-bit,
-  matching the codec's native word length).
+  matching the codec's native word length). K5 and K6 drive the CV
+  modulation source below.
+
+## CV modulation source
+
+A stereo-linked chain has one parameter set and nothing worth
+CV-modulating, so the six CV jacks would otherwise sit idle. **K6** on the
+Output page turns them into a six-channel modulation source instead;
+**K5** is the active mode's continuous control, and a **B3** tap cycles its
+discrete secondary. K6's ring morphs between the mode colours as you
+sweep, and K5 and B3 both wear the active mode's colour.
+
+| K6 | Mode | Jacks | K5 | B3 |
+|---|---|---|---|---|
+| 0 | **Off** | all released | — | — |
+| 1 | **Analysis** | 6 out | Response, fast peak → slow RMS | Sensitivity −60/−40/−20 dBFS |
+| 2 | **Clocked** | J3 clock in, J4 reset in, 4 out | Phase spread, 0° → 270° | Clock ratio ÷4 ÷2 ×1 ×2 ×4 |
+| 3 | **Multi LFO** | 6 out | Base rate, 0.01–10 Hz | Ratio set: Golden / Prime / Narrow |
+| 4 | **Smooth Random** | 6 out | Divergence, one walk → six | Rate range: glacial / slow / medium |
+| 5 | **Euclid** | J3 clock in, 5 gate out | Density | Rotation 0–3 |
+
+**Analysis** is the one that belongs to this module rather than to any
+utility: the mastering chain becomes its own modulation source. J3–J5 carry
+low/mid/high band envelopes, J6 the broadband level, and J7/J8 the
+compressor's and limiter's gain reduction — so a patch can follow what the
+chain is actually doing to the program material.
+
+**Clocked** puts sine, triangle, ramp-up and stepped random on J5–J8, all
+locked to the incoming clock and reset together. **Multi LFO** runs six
+sines at deliberately non-octave ratios, so they never lock into a common
+downbeat. **Smooth Random**'s divergence knob sweeps from all six jacks
+carrying one shared walk at different depths to six independent wanderers.
+**Euclid** puts five co-prime Euclidean gate patterns (16/12/9/7/5 steps)
+on J4–J8, which take 15120 clocks to come back around.
+
+Bipolar modes swing ±4 V rather than ±5 V: J3–J6 are MCP4728-backed and
+bottom out near −4.4 V, so a wider swing would clip on four of the six
+jacks. Envelopes and gates use the 0 to +5 V convention. J7/J8 update every
+1 ms; J3–J6 are batched over I²C at 250 Hz.
 
 Controls: **B1** tap cycles pages. **B2** tap toggles bypass for the
 current page's stage (EQ / compressor / tape / limiter). **B3** tap cycles
 the current page's mode (EQ: mid-Q 0.707 / 1.5 / 4.0; compressor: Precise
-/ Adaptive / Glue; tape: 30 ips / 15 ips / Saturated; output: none).
-**B2+B3** held for 2 s enters the SDK's settings mode, same as the
-template. Presets and settings are kept from the template; **param lock
-and CV routing have been removed** — every knob is a direct, unlatched
-control.
+/ Adaptive / Glue; tape: 30 ips / 15 ips / Saturated; output: the active
+modulation mode's secondary). **B2+B3** held for 2 s enters the SDK's
+settings mode, same as the template. Presets and settings are kept from the
+template; **param lock and CV routing have been removed** — every knob is a
+direct, unlatched control.
 
 Total latency is 75 samples (1.56 ms) — 60 for the limiter's lookahead, 15
 for the tape stage's half-band filters — and is constant regardless of
