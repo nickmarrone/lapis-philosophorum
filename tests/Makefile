@@ -5,7 +5,7 @@
 # dsp_biquad.h is <cmath>-only by invariant, and mastering_dsp.cpp needs only
 # the AudioHandle typedefs, which tests/stubs/daisy_seed.h supplies.
 #
-#   make          build and run all six harnesses
+#   make          build and run all seven harnesses
 #   make golden   regenerate the golden CSVs (EQ coefficients + compressor)
 #   make clean
 # =============================================================================
@@ -21,6 +21,7 @@ CRESPONSE := $(BUILD)/comp_response_test
 CCONTROL  := $(BUILD)/comp_control_test
 SRESPONSE := $(BUILD)/sat_response_test
 SCONTROL  := $(BUILD)/sat_control_test
+LRESPONSE := $(BUILD)/lim_response_test
 
 REPORT    := test_report.h
 COMMON    := eq_test_common.h $(REPORT) ../src/dsp_biquad.h
@@ -28,6 +29,7 @@ CP_COMMON := comp_test_common.h $(COMMON) ../src/dsp_compressor.h \
              ../src/dsp_common.h ../src/mastering_dsp.h
 SAT_COMMON := sat_test_common.h $(COMMON) ../src/dsp_saturation.h \
              ../src/dsp_halfband.h ../src/dsp_common.h ../src/mastering_dsp.h
+LIM_COMMON := lim_test_common.h $(REPORT) ../src/dsp_limiter.h ../src/dsp_common.h
 DSP_SRC   := ../src/mastering_dsp.cpp
 DSP_HDRS  := ../src/mastering_dsp.h ../src/dsp_common.h ../src/dsp_compressor.h \
              ../src/dsp_limiter.h ../src/dsp_saturation.h ../src/dsp_dither.h \
@@ -64,13 +66,21 @@ $(SRESPONSE): sat_response_test.cpp $(SAT_COMMON) | $(BUILD)
 $(SCONTROL): sat_control_test.cpp $(SAT_COMMON) | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -o $@
 
-run: $(RESPONSE) $(CONTROL) $(CRESPONSE) $(CCONTROL) $(SRESPONSE) $(SCONTROL)
+# lim_response_test drives the Limiter struct alone. dsp_limiter.h is
+# <cmath>-only and does not reach for mastering_dsp.h, so this one needs
+# neither the stubs nor mastering_dsp.cpp.
+$(LRESPONSE): lim_response_test.cpp $(LIM_COMMON) | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -o $@
+
+run: $(RESPONSE) $(CONTROL) $(CRESPONSE) $(CCONTROL) $(SRESPONSE) $(SCONTROL) \
+     $(LRESPONSE)
 	@./$(RESPONSE)
 	@./$(CONTROL)
 	@./$(CRESPONSE)
 	@./$(CCONTROL)
 	@./$(SRESPONSE)
 	@./$(SCONTROL)
+	@./$(LRESPONSE)
 
 golden: $(RESPONSE) $(CRESPONSE) $(SRESPONSE)
 	@mkdir -p golden
