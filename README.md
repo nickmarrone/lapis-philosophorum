@@ -4,10 +4,10 @@ A stereo-linked mastering-chain firmware for the [Hermetic Modular Alchemy
 Lab](https://hermeticmodular.com/modules/alchemy-lab) module, built on the
 [Alchemy SDK](https://github.com/hermetic-modular/alchemy-sdk).
 
-Signal path: In → 3-band EQ → Compressor → Tape Saturation → Limiter →
-Output Trim → Dither → Out, stereo-linked throughout — one set of controls
+Signal path: In → 3-band EQ → Compressor → Tape Saturation → Output Trim →
+Limiter → Dither → Out, stereo-linked throughout — one set of controls
 and one gain applied to both channels, so they never drift apart. The
-limiter detects `max(|L|,|R|)`; the compressor sums the two channels'
+limiter's true-peak detector reads `max(|L|,|R|)` 4x oversampled; the compressor sums the two channels'
 power, the way a stereo-linked analogue compressor sums its detector
 currents. Four pages sharing six knobs:
 
@@ -39,7 +39,7 @@ template. Presets and settings are kept from the template; **param lock
 and CV routing have been removed** — every knob is a direct, unlatched
 control.
 
-Total latency is 63 samples (1.3 ms) — 48 for the limiter's lookahead, 15
+Total latency is 75 samples (1.56 ms) — 60 for the limiter's lookahead, 15
 for the tape stage's half-band filters — and is constant regardless of
 bypass state.
 

@@ -1,6 +1,6 @@
 /**
  * mastering_dsp.cpp — Stereo-linked mastering chain: EQ -> Compressor ->
- * Tape Saturation -> Limiter -> Output Trim -> TPDF Dither.
+ * Tape Saturation -> Output Trim -> Limiter -> TPDF Dither.
  *
  * Chain state lives in an anonymous namespace at file scope, mirroring the
  * eq_dsp pattern from the template's prior EQ-only DSP file. All unit
@@ -296,11 +296,19 @@ void Process(daisy::AudioHandle::InputBuffer  in,
 
         sat_.ProcessSample(l, r);  // bypass takes the delayed dry, never a branch
 
-        lim_.ProcessSample(l, r);
-
+        // Trim is ahead of the limiter so the ceiling is the last word on
+        // level. Behind it, +12 dB of trim simply undid the brickwall and
+        // clipped the codec — the knob could defeat the stage that exists to
+        // stop exactly that. Ahead of it, trim is the limiter's input drive,
+        // which is the standard mastering topology: push in for loudness, and
+        // the ceiling still holds.
         l *= trim_lin_;
         r *= trim_lin_;
 
+        lim_.ProcessSample(l, r);
+
+        // Dither stays last. It belongs at the final quantisation point, and
+        // anything that scaled it afterwards would defeat it.
         l += dith_[0].Sample();
         r += dith_[1].Sample();
 

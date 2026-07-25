@@ -1,10 +1,12 @@
 /**
  * mastering_dsp.h — Stereo-linked mastering chain: EQ -> Compressor ->
- * Tape Saturation -> Limiter -> Output Trim -> TPDF Dither.
+ * Tape Saturation -> Output Trim -> Limiter -> TPDF Dither.
  *
- * Chain latency is 63 samples (1.3 ms): 48 of limiter lookahead and 15 of the
+ * Chain latency is 75 samples (1.56 ms): 60 of limiter lookahead and 15 of the
  * saturator's oversampling pair. Both are unconditional — every stage's bypass
  * takes a matched-delay dry path, so latency never depends on bypass state.
+ * The limiter's ceiling is a true-peak (dBTP) ceiling: its detector runs 4x
+ * oversampled, which is where 12 of its 60 samples of lookahead go.
  *
  * The DSP knows nothing about VirtualKnob, ControlLoop, or any SDK surface.
  * The control side computes parameters in engineering units (Hz, dB, ms)
