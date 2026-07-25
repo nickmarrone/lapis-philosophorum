@@ -24,8 +24,8 @@ currents. Four pages sharing six knobs:
   memoryless: drive, dry/wet mix, emphasis, asymmetry, and head bump, with
   three tape machines on B3 — 30 ips, 15 ips, and Saturated. Each machine
   carries its own emphasis shelf, knee and head-bump resonance. Runs 2×
-  oversampled with first-order ADAA, and is unity-gain at small signal at
-  every drive setting.
+  oversampled with first-order ADAA, and holds program level across the
+  whole drive range — drive trades peaks for harmonics, not for level.
 - **Page 4 — Output (red).** Brickwall limiter (ceiling, release),
   followed by output trim and TPDF dither depth (0–2 LSB at 24-bit,
   matching the codec's native word length).

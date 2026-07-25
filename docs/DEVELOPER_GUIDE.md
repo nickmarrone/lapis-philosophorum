@@ -569,11 +569,47 @@ compensated: a gently soft top end is on-character, and correcting it would
 boost exactly the band the residual aliases land in. The harness asserts
 departure from that *curve* rather than flatness.
 
-**Gain compensation.** The input is multiplied by `knee × drive` and the
-output divided by the same, so small-signal gain is exactly unity at every
-drive setting and every character. Drive changes tone, not level — which
-is what makes bypass an honest A/B and stops the Drive knob from feeding
-the limiter.
+**Gain compensation is referenced to a program level, not to the origin.**
+The input is multiplied by `knee × drive`; the output is divided by the
+*chord* from the origin to `kSatRefAmp`, `tanh(drive × a) / a`, rather than
+by the `knee × drive` that went in.
+
+Dividing by `knee × drive` is what this used to do, and it is exactly right
+about the slope at the origin — which is the trap. Loudness is set by the
+curve's **large-signal** gain, and that collapses as `tanh` flattens.
+Measured through the whole chain on a mix-like program, drive 0 → 24 dB cost
+**11.3 dB** of output RMS, dropped the peak 22 dB, and disengaged the limiter
+completely. The harmonics were all present — 17 % THD at −18 dBFS — and
+inaudible underneath a level drop of the same size, because an unmatched A/B
+is decided by loudness before timbre. The knob read as a volume control that
+also dulled the top end. It is now 1.5 dB over the same range.
+
+`kSatRefAmp` is 0.195, a one-parameter fit to the makeup that holds output
+RMS constant for noise at −12 dBFS RMS, tracking it within 0.33 dB over
+0–24 dB of drive and all three knees. It reads low for a program level
+because program saturates on its peaks rather than at its average. The
+numerator is normalised per character (`tanh(knee × a) / knee`) so that
+drive 0 — where `drive_` equals `knee` — is *exactly* transparent; that
+property is load-bearing for the emphasis-pair argument and survives the
+change. It is the one scalar here that steps rather than eases, and it can
+afford to: across the three knees it spans 0.1902 to 0.1934, a 0.14 dB step
+on a B3 press that changes the knee, the emphasis curve and the bump in the
+same instant.
+
+Two things the scheme costs, both asserted rather than implied:
+
+- Small-signal gain is **no longer unity** away from drive 0. It reaches
+  +7.9 dB at full drive on 30 ips, +9.7 on 15 ips, +12.5 on Saturated, and
+  lifts the noise floor with it. That is tape compression — quiet material
+  rising relative to loud — not a defect, but Drive is no longer free.
+- The makeup follows drive only. Emphasis adds its own HF compression on
+  top, so Saturated with emphasis wide open still loses ~7.7 dB across the
+  drive range. Compensating that would need the program's spectrum.
+
+Harmonic levels *relative to the fundamental* are untouched by any of this,
+since a post gain cannot change a ratio — which is why the harmonic golden
+held through the change while the curve golden moved by exactly a constant
+per character.
 
 **The ADAA history is never reset.** The previous saturator reset it in
 `Configure()`, because switching between a cubic and a hard clip really
@@ -592,7 +628,10 @@ removes what the nonlinearity does to it under signal. Both are needed.
 **Cost.** This is by some distance the most expensive stage in the chain:
 four biquads, two half-band phases, and two shaper evaluations per sample
 per channel, each shaper carrying a divide and — above |x| = 0.5 — an
-`expf` and a `log1pf`. Measured on a host at **3.5× the compressor's
+`expf` and a `log1pf`. The gain compensation adds a `tanhf`, but only while
+Drive is actually moving: `drive_` converges to its target bit-exactly and
+then stops, so the dirty check over `comp_` costs one compare per sample in
+the steady state. Measured on a host at **3.5× the compressor's
 per-sample cost**, which against the compressor's ~220 cycles/sample puts
 it near 780, or roughly 8 % of one core at 48 kHz. Treat that as an order
 of magnitude and not a budget: the ratio was taken on x86, whose libm and
@@ -908,6 +947,13 @@ Same shape, different tables:
 5. Extend the character loops in `tests/sat_response_test.cpp` and
    regenerate the goldens — the curve and harmonic grids are per character.
 
+The knee now has a second consequence: it sets the reference chord's
+normalisation, so it decides both how much small-signal boost the machine
+carries at full drive and how big the level step is when B3 switches to it.
+A knee far outside the current 0.8–1.4 span widens both. `TestUnityGain`
+measures them per character, so extending its loop in step 5 is what
+catches an unreasonable one.
+
 Do **not** give a machine a different shaper function. The single `tanh`
 is what makes the ADAA history valid across a character switch, and
 therefore what lets `Configure()` leave it alone (invariant 15). A new
@@ -983,13 +1029,16 @@ Things that will bite quietly if broken:
     control frame has nothing downstream to smooth it, so the step *is* the
     click. Trim was the exception until the chain harness measured it.
     (§4.3, §9.1)
-18. **Never ease a quantity and its reciprocal independently.** Both
+18. **Never ease a quantity and its compensation independently.** Both
     endpoints are right and every point between them is wrong: the
-    saturator's `inv_drive_` is derived as `1.f / drive_`, because easing
-    it toward `1/D` alongside `drive_` easing toward `D` put the midpoint
-    of a 0→24 dB move at a *product* of 4.5, i.e. +13 dB of small-signal
-    gain on the one knob whose contract is that it does not change level.
-    (§4.2, §9.1)
+    saturator's `comp_` is derived from `drive_` every sample, because
+    easing it toward `comp(D)` alongside `drive_` easing toward `D` leaves
+    the ease travelling off the curve that relates them. When the pair was
+    a reciprocal, that put the midpoint of a 0→24 dB move at a *product*
+    of 4.5 — +13 dB of gain on the one knob whose contract is that it does
+    not change level. The reference chord has the same trap with the same
+    shape, so it is derived the same way; what makes the transcendental
+    affordable is a dirty check on `drive_`, not an ease. (§4.2, §9.1)
 
 ---
 
@@ -1084,8 +1133,10 @@ for their respective scopes.
   end-to-end chain latency measurement that keeps §8 honest.
 - `tests/sat_response_test.cpp` — the saturator alone: half-band round-trip
   transparency and image rejection, emphasis/de-emphasis reconstruction
-  (including mid-ramp) and inverse-filter stability, unity small-signal
-  gain at every drive and character, harmonic decay rate, asymmetry and its
+  (including mid-ramp) and inverse-filter stability, the program-level
+  match across the drive range with the origin-referenced compensation as
+  its negative control, zero-drive transparency per character, harmonic
+  decay rate, asymmetry and its
   DC, alias energy, head-bump height and return, the frequency-dependence
   that makes it tape, bypass/mix delay matching, adversarial inputs, and
   the goldens.
