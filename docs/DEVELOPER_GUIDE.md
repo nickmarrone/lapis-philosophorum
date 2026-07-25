@@ -699,6 +699,17 @@ so it needs no separate sizing.
 `kLookahead` is 60 rather than 48 to absorb the detector's delay without
 shrinking the ramp window — see §8 for why the chain budget moved instead.
 
+**Cost.** The detector is three `HalfBandUp` calls per channel — stage one
+once, stage two twice — at 8 multiply-accumulates each, so 48 MACs per
+stereo sample on top of what the limiter did before. Against the ~10 000
+cycles an H7 has per sample at 48 kHz that is a low single-digit percent,
+and unlike the saturator's cost this one is plain arithmetic rather than a
+host-measured ratio: there are no transcendentals and no divides in it.
+`RunMin` adds two compares per sample plus one `kHoldWin`-long suffix pass
+every `kHoldWin` samples — bounded work with no dependence on the signal,
+which is why it is van Herk rather than a monotonic deque. **None of this
+has been profiled on hardware.**
+
 The post-gain `Clampf` to `±ceiling_lin` is now genuinely belt-and-braces:
 it is there for float rounding, and the harness asserts it never has
 anything to do.
@@ -937,8 +948,8 @@ Things that will bite quietly if broken:
     silent regression. (§9)
 12. **The compressor adds no latency, and must not.** Its bypass takes the
     same-sample dry signal (§4.1), so a lookahead line would turn bypass
-    into a click — and the budget it would spend is now fully allocated.
-    (§8)
+    into a click. That reason stands on its own and does not depend on how
+    much of the chain budget happens to be free. (§8)
 13. **Inside `Compressor`, gain reduction is a POSITIVE attenuation**; only
     `gr_db` is negated. The decoupled release stage uses `fmaxf`
     accordingly. Flipping either without the other silently swaps attack
