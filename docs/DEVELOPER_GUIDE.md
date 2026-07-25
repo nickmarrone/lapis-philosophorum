@@ -341,8 +341,8 @@ for (size_t i = 0; i < n; i++) {
     comp_.ProcessSample(l, r);     // stereo-linked, handles own bypass
     l = sat_.ProcessSample(l, 0);
     r = sat_.ProcessSample(r, 1);
-    lim_.ProcessSample(l, r);      // stereo-linked
     l *= trim_lin_;  r *= trim_lin_;
+    lim_.ProcessSample(l, r);      // stereo-linked; the last word on level
     l += dith_[0].Sample();  r += dith_[1].Sample();
 
     out[0][i] = l;  out[1][i] = r;
@@ -722,10 +722,13 @@ zero state is stuck at zero** — any new seed must be nonzero.
 
 ### 4.3 Ordering decisions worth knowing
 
-- **Trim is post-limiter.** Positive trim can exceed the limiter ceiling
-  and clip the codec. This is a real footgun and it's documented in the
-  user guide; if you'd rather it be safe, move `trim_lin_` above
-  `lim_.ProcessSample`.
+- **Trim is pre-limiter**, so the ceiling is the last word on level.
+  Behind the limiter, +12 dB of trim simply undid the brickwall and
+  clipped the codec — the knob could defeat the stage that exists to
+  prevent exactly that. Ahead of it, trim is the limiter's input drive,
+  which is also the standard mastering topology: push in for loudness and
+  the ceiling still holds. The cost is that trim can no longer raise the
+  output above the ceiling at all, which is the point.
 - **Dither is post-trim**, which is correct — dither belongs at the final
   quantisation point, and scaling it afterward would defeat it.
 - **The compressor detects post-EQ**, so EQ moves change how hard the

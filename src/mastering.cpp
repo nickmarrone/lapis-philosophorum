@@ -1,6 +1,6 @@
 /**
  * mastering.cpp — Alchemy Lab stereo-linked mastering chain.
- * In -> EQ -> Compressor -> Tape Saturation -> Limiter -> Trim -> Dither -> Out.
+ * In -> EQ -> Compressor -> Tape Saturation -> Trim -> Limiter -> Dither -> Out.
  *
  * Pure DSP in mastering_dsp.* implements:
  * - Three-band EQ (low shelf / peaking mid / high shelf), stereo-linked params
@@ -8,7 +8,7 @@
  * - Tape saturation: emphasis/de-emphasis around a 2x-oversampled ADAA tanh,
  *   head bump, three tape-machine characters
  * - Lookahead peak limiter
- * - Output trim + continuous TPDF dither
+ * - Output trim into the limiter + continuous TPDF dither
  *
  * This file implements:
  * - All the required hardware and audio callback management.

@@ -1,6 +1,6 @@
 /**
  * mastering_dsp.h — Stereo-linked mastering chain: EQ -> Compressor ->
- * Tape Saturation -> Limiter -> Output Trim -> TPDF Dither.
+ * Tape Saturation -> Output Trim -> Limiter -> TPDF Dither.
  *
  * Chain latency is 75 samples (1.56 ms): 60 of limiter lookahead and 15 of the
  * saturator's oversampling pair. Both are unconditional — every stage's bypass

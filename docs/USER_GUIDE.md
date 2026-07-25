@@ -17,7 +17,7 @@ and no longer ducks the whole mix on its own.
 ## Signal flow
 
 ```
-IN ──▶ 3-band EQ ──▶ Compressor ──▶ Tape ──▶ Limiter ──▶ Trim ──▶ Dither ──▶ OUT
+IN ──▶ 3-band EQ ──▶ Compressor ──▶ Tape ──▶ Trim ──▶ Limiter ──▶ Dither ──▶ OUT
         (bypass)      (bypass)     (bypass)  (bypass)    always    always
 ```
 
@@ -261,7 +261,7 @@ Brickwall limiting, output level, and dither.
 |---|---|---|---|
 | K1 | Limiter ceiling | −6 dB – −0.1 dB | linear |
 | K2 | Limiter release | 10 ms – 500 ms | exponential |
-| K3 | Output trim | −12 dB – +12 dB | linear, centre = 0 |
+| K3 | Trim (limiter drive) | −12 dB – +12 dB | linear, centre = 0 |
 | K4 | Dither | 0 – 2 LSB (24-bit) | linear |
 | K5, K6 | — | unassigned | |
 
@@ -270,7 +270,9 @@ to the left, dim white at centre.
 
 - **B2 tap** — bypass the **limiter**. Trim and dither keep running, and
   so does the limiter's lookahead delay, so latency does not change and
-  the A/B is time-aligned.
+  the A/B is time-aligned. Note that with the limiter bypassed nothing
+  caps the output, so a hot trim setting can clip the codec — that is the
+  bypass doing its job, not a fault.
 - **B3 tap** — nothing. This page has no secondary mode, and B3 shows a
   dim neutral grey to say so rather than a stale colour from another
   page.
@@ -287,11 +289,15 @@ limiter's lookahead and 15 for the tape stage's oversampling filters. It
 is constant, and it is there whether or not either stage is doing
 anything or is bypassed.
 
-**⚠️ Trim sits *after* the limiter.** Positive trim can push the signal
-back above the ceiling you just set, and past 0 dBFS it will clip the
-codec. If you want the ceiling honoured at the output jack, keep trim at
-or below centre, and use makeup gain on the compressor page for loudness
-instead.
+**Trim sits *before* the limiter**, so it is the limiter's input drive
+rather than an output level. Turn it up and you push harder into the
+ceiling — louder and more limited, but never above the ceiling. Turn it
+down and you back off the limiting and the output gets quieter. The
+ceiling is the last word on level either way; nothing on this page can
+take the output past it.
+
+If you want loudness without more limiting, use makeup gain on the
+compressor page instead.
 
 **Dither** adds TPDF (triangular) noise at the very end, scaled in 24-bit
 LSBs. It decorrelates the quantisation error from the signal, trading a
