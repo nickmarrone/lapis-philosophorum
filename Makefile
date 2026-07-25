@@ -22,7 +22,8 @@ LIBDAISY_DIR = lib/libDaisy
 # ── App sources — yours to edit ─────────────────────────────────────────────
 CPP_SOURCES = \
     src/mastering.cpp \
-    src/mastering_dsp.cpp
+    src/mastering_dsp.cpp \
+    src/mod_source.cpp
 
 # ── Alchemy SDK, compiled straight from the submodule ───────────────────────
 CPP_SOURCES += $(sort $(shell find $(ALCHEMY_DIR)/framework/src -name '*.cpp'))
