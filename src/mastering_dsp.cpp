@@ -84,7 +84,19 @@ Compressor comp_;
 Saturator  sat_;
 Limiter    lim_;
 
-float trim_lin_ = 1.f;
+// Output trim. Eased on the audio side at 5 ms, like every other scalar in this
+// chain that multiplies the audio directly (the compressor's makeup and mix,
+// the saturator's drive and mix). It is the only one that used to be written
+// straight from the control frame, and being a plain gain is exactly why that
+// was wrong: a raw gain step IS the click, with nothing downstream to smooth
+// it. At the pot's 8 ms smoothing a brisk sweep of the +/-12 dB range hands the
+// DSP ~2 dB per 16 ms frame, and a 2 dB gain step in one sample is a 26 %
+// discontinuity — measured at 9.4e-3 against a program slew of 5.5e-3, i.e.
+// audible zipper on an ordinary knob move.
+float trim_tgt_  = 1.f;
+float trim_run_  = 1.f;
+float trim_ease_ = 0.004158f;   // MsToCoef(5, 48000); Init() re-derives for fs
+bool  trim_primed_ = false;
 
 TpdfDither dith_[2] = {TpdfDither(0x2545F491u), TpdfDither(0x9E3779B9u)};
 
@@ -95,6 +107,7 @@ void Init(float sample_rate)
     fs_ = sample_rate;
     comp_.InitSidechain(fs_);   // three fixed sidechain high-passes, designed once
     sat_.Init(fs_);             // sets the DC-blocker pole and the 5 ms param ease
+    trim_ease_ = MsToCoef(5.f, fs_);
 }
 
 /**
@@ -227,7 +240,12 @@ void SetSat(const SatParams& p)
 void SetOutput(const OutParams& p)
 {
     lim_.Configure(p.ceiling_db, p.lim_release_ms, p.lim_bypass, fs_);
-    trim_lin_ = DbToLin(p.trim_db);
+    trim_tgt_ = DbToLin(p.trim_db);
+    if (!trim_primed_)              // boot and preset load snap, never glide
+    {
+        trim_run_    = trim_tgt_;
+        trim_primed_ = true;
+    }
     dith_[0].amp = dith_[1].amp = p.dither_lsb * kLsb24;
 }
 
@@ -302,8 +320,11 @@ void Process(daisy::AudioHandle::InputBuffer  in,
         // stop exactly that. Ahead of it, trim is the limiter's input drive,
         // which is the standard mastering topology: push in for loudness, and
         // the ceiling still holds.
-        l *= trim_lin_;
-        r *= trim_lin_;
+        //
+        // Eased per sample, not taken from the control frame; see trim_ease_.
+        trim_run_ += trim_ease_ * (trim_tgt_ - trim_run_);
+        l *= trim_run_;
+        r *= trim_run_;
 
         lim_.ProcessSample(l, r);
 
