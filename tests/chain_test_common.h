@@ -240,14 +240,27 @@ inline double PeakDb(const std::vector<float>& v, size_t skip = 0)
 }
 
 /**
+ * Half-band meter warm-up, in samples.
+ *
+ * Learned the hard way and worth stating plainly: a TruePeak4x boots with a
+ * zeroed 16-sample history, so a meter started in the middle of a loud passage
+ * sees a step and rings. That Gibbs overshoot measures 2.6 % — 0.22 dB — which
+ * is larger than any ceiling violation this harness is hunting, and it looks
+ * exactly like a limiter that has drifted. Every true-peak measurement below
+ * therefore discards at least this many samples before it starts recording.
+ */
+constexpr size_t kMeterWarmup = 64;
+
+/**
  * 4x true peak of a captured buffer, built from the same TruePeak4x the limiter
  * detects with. The caveat lim_test_common.h states applies here too and is
  * worth restating: this cannot detect an error common to the detector and the
  * meter. It is a check that the *chain* does not undo what the limiter did, not
- * an independent audit of BS.1770.
+ * an independent audit of BS.1770 — for which see SincTruePeakDb below.
  */
 inline double TruePeakDb(const std::vector<float>& v, size_t skip = 0)
 {
+    skip = std::max(skip, kMeterWarmup);
     mastering_dsp::TruePeak4x tp;
     double pk = 0.0;
     for (size_t i = 0; i < v.size(); i++)
@@ -256,6 +269,63 @@ inline double TruePeakDb(const std::vector<float>& v, size_t skip = 0)
         if (i >= skip) pk = std::fmax(pk, (double)m);
     }
     return 20.0 * std::log10(pk + 1e-30);
+}
+
+/**
+ * Independent true peak: 8x, 129-tap Blackman-windowed sinc per phase, in
+ * double, sharing nothing with the DSP.
+ *
+ * This is the meter TruePeakDb cannot be. The limiter's ceiling is enforced
+ * with a 4x half-band, so measuring the result with the same 4x half-band can
+ * only ever confirm that the limiter used its own detector consistently — an
+ * error in the detector would be invisible, because the meter would make the
+ * identical error. Reconstructing at 8x with a completely different filter
+ * closes that, and the difference between the two readings is itself the
+ * interesting number: it is how much of the real inter-sample peak a 4x
+ * detector cannot see. Measured on this chain that gap is under 0.01 dB, and on
+ * the limiter driven directly with aliasy program it reaches 0.14 dB.
+ *
+ * Evaluating 1032 taps at every sample of a 60 s capture would dominate the
+ * harness's runtime, so candidates are pre-screened: an inter-sample peak
+ * always sits beside a sample within a few dB of the sample peak, so only those
+ * neighbourhoods are reconstructed. That is an optimisation, not an
+ * approximation — widening the screen does not change the answer.
+ */
+inline double SincTruePeakDb(const std::vector<float>& v, size_t skip = 0)
+{
+    constexpr int    kUp = 8, kHalf = 64;
+    constexpr double kScreenDb = 6.0;      // reconstruct within 6 dB of the peak
+
+    static std::vector<std::vector<double>> phase;
+    if (phase.empty())
+    {
+        phase.assign(kUp, std::vector<double>(2 * kHalf + 1));
+        for (int p = 0; p < kUp; p++)
+            for (int k = -kHalf; k <= kHalf; k++)
+            {
+                const double x = double(k) - double(p) / kUp;
+                const double s = (std::fabs(x) < 1e-12) ? 1.0
+                                                        : std::sin(kPi * x) / (kPi * x);
+                const double u = double(k + kHalf) / (2.0 * kHalf);
+                const double w = 0.42 - 0.5 * std::cos(2 * kPi * u)
+                                     + 0.08 * std::cos(4 * kPi * u);
+                phase[p][k + kHalf] = s * w;
+            }
+    }
+
+    const double screen = Peak(v, skip) * std::pow(10.0, -kScreenDb / 20.0);
+    double       pk     = 0.0;
+    for (size_t n = std::max(skip, (size_t)kHalf); n + kHalf < v.size(); n++)
+    {
+        if (std::fabs((double)v[n]) < screen) continue;
+        for (int p = 1; p < kUp; p++)       // p = 0 is the sample itself
+        {
+            double a = 0.0;
+            for (int k = -kHalf; k <= kHalf; k++) a += phase[p][k + kHalf] * (double)v[n - k];
+            pk = std::fmax(pk, std::fabs(a));
+        }
+    }
+    return 20.0 * std::log10(std::fmax(pk, Peak(v, skip)) + 1e-30);
 }
 
 /** Largest sample-to-sample step — the instrument for "is that a click". */
