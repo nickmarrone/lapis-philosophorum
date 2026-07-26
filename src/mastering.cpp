@@ -240,9 +240,21 @@ struct ChainModes : public alchemy::Serializable
 
     /* One secondary index per modulation mode, so each remembers its own —
      * switching from Clocked to Euclid and back returns to the clock ratio
-     * you left, not to whatever the rotation happened to be. Indexed by
-     * mod_source::Mode; slot 0 (Off) is unused and always reads 0. */
-    uint8_t mod_secondary[static_cast<uint8_t>(mod_source::Mode::kCount)] = {};
+     * you left, not to whatever the step set happened to be. Indexed by
+     * mod_source::Mode; slot 0 (Off) is unused and always reads 0.
+     *
+     * Zero is the right default everywhere except Euclid, whose zones are
+     * ordered by cycle length rather than by which one the module has always
+     * shipped with. Index 2 is the Classic 16/12/9/7/5 grid, so a virgin
+     * module still comes up sounding like the firmware it replaces. */
+    uint8_t mod_secondary[static_cast<uint8_t>(mod_source::Mode::kCount)] = {
+        0,  // Off
+        0,  // Analysis     — normal polarity
+        0,  // Clocked      — 1/4 clock ratio
+        0,  // MultiLfo     — Golden ratios
+        0,  // SmoothRandom — glacial
+        2,  // Euclid       — Classic step set
+    };
 
     static constexpr size_t kNumModes =
         static_cast<size_t>(mod_source::Mode::kCount);

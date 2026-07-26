@@ -85,11 +85,36 @@ constexpr float kLfoBaseHzMin = 0.01f, kLfoBaseHzMax = 10.f;
 
 /* ── Mode::Euclid ────────────────────────────────────────────────────── */
 
-/* Co-prime lengths: the combined five-pattern cycle is 16*12*9*7*5 / shared
- * factors = 15120 clocks before everything lines up again. */
-constexpr uint8_t kEuclidSteps[5] = {16, 12, 9, 7, 5};
+/* Step-length sets, cycled by B3 and ordered by how long the five patterns
+ * take to reline — the LCM of the row, i.e. the full combined cycle.
+ *
+ * Only the grid changes; density and gate length are the same knobs against
+ * all five. Before this the lengths were hardwired to the Classic row, so the
+ * only thing you could change about the rhythm was how dense it was.
+ *
+ * B3 used to hold a rotation applied identically to all five patterns, which
+ * is a pure time-shift of the whole ensemble — with no external downbeat to
+ * hear it against, four zones that all sound the same. EuclidPattern still
+ * takes a rotation because it is a pure function worth testing as one; nothing
+ * passes it anything but zero now. */
+constexpr uint8_t kEuclidSets[5][5] = {
+    { 8,  7,  6,  5,  4},   // tight   — relines every 840 clocks
+    {12,  9,  8,  7,  5},   // compact — 2520, busy but with a 4/4 anchor
+    {16, 12,  9,  7,  5},   // classic — 5040, the set this shipped with
+    {13, 11,  9,  7,  5},   // odd     — 45045, no power of two anywhere
+    {17, 15, 13, 11,  9},   // long    — 109395, evolves rather than repeats
+};
 
-constexpr float kGateMinSec = 0.002f, kGateMaxSec = 0.100f;
+/* No two rows share a first element, which matters more than it looks: a patch
+ * that only uses one output still hears the button move. The Long row started
+ * 16, 15, ... for that reason alone — it collided with Classic on jack 1, so
+ * those two sets were indistinguishable to anyone patching a single gate. */
+
+/* Floor on gate length. The ceiling is a fraction of the measured clock
+ * period rather than a constant, so the knob means the same thing at any
+ * tempo. */
+constexpr float kGateMinSec = 0.002f;
+constexpr float kGateMaxDuty = 0.95f;
 
 /* ── helpers ─────────────────────────────────────────────────────────── */
 
@@ -191,7 +216,7 @@ uint8_t SecondaryZones(Mode m)
         case Mode::Clocked:      return 5;   // clock ratio
         case Mode::MultiLfo:     return 3;   // ratio set
         case Mode::SmoothRandom: return 4;   // rate range
-        case Mode::Euclid:       return 4;   // rotation
+        case Mode::Euclid:       return 5;   // step-length set
         default:                 return 1;   // Off — the tap is a no-op
     }
 }
@@ -320,17 +345,28 @@ void ModSource::OnClock(uint32_t t_us)
 
     if (params_.mode == Mode::Euclid)
     {
-        /* Gate length is half the clock period, so the pattern stays readable
-         * whether the clock is 60 BPM or 600. */
-        const float gate = Clamp(0.5f / clk_hz_, kGateMinSec, kGateMaxSec);
-        const uint8_t rotation = params_.secondary;
+        /* Gate length spans a 2 ms trigger to almost the whole clock period,
+         * as a fraction of the measured period so the knob means the same
+         * thing at any tempo.
+         *
+         * This used to be derived as half the period and then clamped to
+         * 100 ms, which meant the clamp won across the entire normal musical
+         * range rather than the extremes it was written for: at 2 Hz — 120 BPM
+         * eighths — "half the period" came out as 20 %, and at 1 Hz as 10 %.
+         * Every pattern was a short trigger no matter the tempo, and no knob
+         * could say otherwise. */
+        const float max_gate = kGateMaxDuty / clk_hz_;
+        const float min_gate = max_gate < kGateMinSec ? max_gate : kGateMinSec;
+        const float gate     = Lerp(min_gate, max_gate, params_.knob_b);
+
+        const uint8_t* lengths = kEuclidSets[params_.secondary % 5];
 
         for (uint8_t k = 0; k < 5; k++)
         {
-            const uint8_t steps  = kEuclidSteps[k];
+            const uint8_t steps  = lengths[k];
             const uint8_t pulses = static_cast<uint8_t>(
                 params_.knob_a * static_cast<float>(steps) + 0.5f);
-            const uint32_t pattern = EuclidPattern(steps, pulses, rotation);
+            const uint32_t pattern = EuclidPattern(steps, pulses, 0);
             const uint8_t  step    = static_cast<uint8_t>(clock_count_ % steps);
             if (pattern & (1u << step))
                 gate_left_[k + 1] = gate;   // jack 0 is the clock input

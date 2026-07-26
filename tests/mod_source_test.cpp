@@ -663,6 +663,103 @@ int main()
         rep.Check(MaxAbs(tr[0]) == 0.0, "clock input jack is never driven", "");
     }
 
+    rep.Section("Euclid — gate length");
+    {
+        /* Gate length is a fraction of the measured clock period, so the same
+         * knob position gives the same duty cycle at any tempo. That is the
+         * property the old derive-then-clamp broke: it pinned the gate to
+         * 100 ms, which is a different duty at every clock below 5 Hz. */
+        auto duty = [](float knob_b, float clk_period) {
+            ModSource m = Make(Mode::Euclid, 1.f, 2, 12345u, knob_b);
+            auto tr = RunClocked(m, 16.f, clk_period);
+            size_t high = 0;
+            for (float v : tr[1]) if (v > 1.f) high++;
+            return (double)high / (double)tr[1].size();
+        };
+
+        const double d_short = duty(0.f, 0.125f);
+        const double d_long  = duty(1.f, 0.125f);
+        rep.Check(d_long > d_short * 5.0,
+                  "the knob spans trigger to near-legato",
+                  Fmt("%.1f %% duty at 0, ", d_short * 100.0)
+                      + Fmt("%.1f %% at 1", d_long * 100.0));
+        rep.Check(d_long > 0.8,
+                  "full gate length nearly fills the clock period",
+                  Fmt("%.1f %% duty", d_long * 100.0));
+
+        /* Same knob, clock four times slower: the duty must not move. */
+        const double d_slow = duty(1.f, 0.5f);
+        rep.Check(std::fabs(d_slow - d_long) < 0.05,
+                  "duty is tempo-independent",
+                  Fmt("%.1f %% at 8 Hz vs ", d_long * 100.0)
+                      + Fmt("%.1f %% at 2 Hz", d_slow * 100.0));
+    }
+
+    rep.Section("Euclid — step-length sets");
+    {
+        /* Five sets, five patterns each, ordered by combined cycle length.
+         * The ordering is the whole basis of the B3 sweep, so pin it. */
+        const uint8_t sets[5][5] = {{ 8,  7,  6,  5, 4},
+                                    {12,  9,  8,  7, 5},
+                                    {16, 12,  9,  7, 5},
+                                    {13, 11,  9,  7, 5},
+                                    {17, 15, 13, 11, 9}};
+
+        /* No two rows may share a first element, or a patch using only J4
+         * cannot hear the button move between those two sets. */
+        bool firsts_unique = true;
+        for (int a = 0; a < 5; a++)
+            for (int b = a + 1; b < 5; b++)
+                if (sets[a][0] == sets[b][0]) firsts_unique = false;
+        rep.Check(firsts_unique, "no two sets share a first pattern length", "");
+
+        auto lcm5 = [](const uint8_t* r) {
+            long long l = 1;
+            for (int i = 0; i < 5; i++)
+            {
+                long long a = l, b = r[i];
+                while (b) { const long long t = a % b; a = b; b = t; }
+                l = l / a * r[i];
+            }
+            return l;
+        };
+        bool ordered = true;
+        long long prev_lcm = 0;
+        for (int s = 0; s < 5; s++)
+        {
+            const long long l = lcm5(sets[s]);
+            if (l <= prev_lcm) ordered = false;
+            prev_lcm = l;
+        }
+        rep.Check(ordered, "sets are ordered by increasing cycle length",
+                  Fmt("longest relines every %.0f clocks", (double)prev_lcm));
+
+        /* Each set must actually produce a different rhythm from the others,
+         * or the button is back to being decorative. Compare the whole
+         * five-jack ensemble, which is what the mode actually emits. */
+        std::vector<std::vector<float>> flat;
+        bool all_differ = true;
+        for (uint8_t s = 0; s < 5; s++)
+        {
+            ModSource m = Make(Mode::Euclid, 0.5f, s, 12345u, 0.f);
+            auto tr = RunClocked(m, 40.f, 0.125f);
+
+            std::vector<float> all;
+            for (uint8_t j = 1; j < kNumJacks; j++)
+                all.insert(all.end(), tr[j].begin(), tr[j].end());
+
+            for (auto& seen : flat)
+            {
+                bool same = true;
+                for (size_t i = 0; i < seen.size() && i < all.size(); i++)
+                    if (std::fabs(seen[i] - all[i]) > 0.1f) { same = false; break; }
+                if (same) all_differ = false;
+            }
+            flat.push_back(all);
+        }
+        rep.Check(all_differ, "every set gives a distinct ensemble", "");
+    }
+
     /* ── Analysis ────────────────────────────────────────────────────── */
     rep.Section("Analysis — band split");
     {
@@ -784,7 +881,7 @@ int main()
         rep.Check(SecondaryZones(Mode::Clocked) == 5, "Clocked has 5", "");
         rep.Check(SecondaryZones(Mode::MultiLfo) == 3, "MultiLfo has 3", "");
         rep.Check(SecondaryZones(Mode::SmoothRandom) == 4, "SmoothRandom has 4", "");
-        rep.Check(SecondaryZones(Mode::Euclid) == 4, "Euclid has 4", "");
+        rep.Check(SecondaryZones(Mode::Euclid) == 5, "Euclid has 5", "");
 
         /* An out-of-range secondary must be clamped, not indexed with. */
         ModSource m;
