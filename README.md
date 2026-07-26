@@ -1,4 +1,4 @@
-# alchemy-mastering
+# Lapis Philosophorum
 
 A stereo-linked mastering-chain firmware for the [Hermetic Modular Alchemy
 Lab](https://hermeticmodular.com/modules/alchemy-lab) module, built on the
@@ -124,7 +124,8 @@ builds with the standard Daisy `make` workflow.
 │   ├── dsp_saturation.h      tape saturation: emphasis pair, ADAA tanh, head bump
 │   ├── dsp_halfband.h        2x polyphase half-band up/downsamplers + matched dry delay
 │   ├── dsp_dither.h          xorshift32 TPDF dither
-│   └── mastering_palette.h   LED color palettes
+│   ├── mastering_palette.h   LED color palettes
+│   └── version.h             firmware version — single source of truth
 ├── tools/
 │   └── halfband_design.py    regenerates the half-band tap table
 └── lib/
@@ -155,11 +156,19 @@ brew install --cask gcc-arm-embedded
 ## Getting started
 
 ```sh
-git clone --recurse-submodules <this-repo> alchemy-mastering
-cd alchemy-mastering
+git clone --recurse-submodules <this-repo> lapis-philosophorum
+cd lapis-philosophorum
 
 make libdaisy    # build libDaisy once after cloning
-make             # build the firmware → build/mastering.bin
+make             # build the firmware → build/lapis_philosophorum_v0.5.0.bin
+```
+
+The version comes from [`src/version.h`](src/version.h) and lands in two
+places: the artifact name, and the image itself. So even a `.bin` that has
+been renamed can be identified:
+
+```sh
+strings build/lapis_philosophorum_v0.5.0.bin | grep Lapis   # → LapisPhilosophorum 0.5.0
 ```
 
 `BOARD=v2` is the default; pass `make BOARD=v1` for an original dev board.
@@ -191,6 +200,8 @@ page, and extending the preset payload. The short version:
 2. **Rename the firmware** — change `TARGET` at the top of the
    [`Makefile`](Makefile) (this names the `.bin`), and rename the `src/`
    files to taste, updating `CPP_SOURCES` to match.
+   [`src/version.h`](src/version.h) carries the version that names the
+   `.bin` and is stamped into the image; bump it there and nowhere else.
 3. **Add source files** — append them to `CPP_SOURCES` in the Makefile.
    One caveat from the underlying Daisy build: object files are flattened
    into `build/` by basename, so two sources can't share a filename even in

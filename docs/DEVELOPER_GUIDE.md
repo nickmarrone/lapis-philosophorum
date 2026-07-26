@@ -1,4 +1,4 @@
-# Mastering — Developer Guide
+# Lapis Philosophorum — Developer Guide
 
 How this firmware is put together, why it's put together that way, and
 what to touch when you want to change it.
@@ -109,7 +109,8 @@ src/
 ├── dsp_analysis.h         band split + envelope followers (CV telemetry, not signal path)
 ├── mod_source.h           CV modulation engine — mode map and public seam
 ├── mod_source.cpp         CV modulation engine — the five generators
-└── mastering_palette.h    LED colour constants
+├── mastering_palette.h    LED colour constants
+└── version.h              firmware version — single source of truth (§5)
 
 tools/
 └── halfband_design.py     regenerates dsp_halfband.h's tap table (Parks-McClellan)
@@ -937,9 +938,9 @@ lib/libDaisy          → submodule, prebuilt once
 ```
 
 ```sh
-git clone --recurse-submodules <repo> && cd alchemy-mastering
+git clone --recurse-submodules <repo> && cd lapis-philosophorum
 make libdaisy          # once after cloning
-make                   # → build/mastering.bin
+make                   # → build/lapis_philosophorum_v0.5.0.bin
 make program-dfu       # flash (module in DFU mode first)
 make clean
 ```
@@ -948,7 +949,7 @@ Key `Makefile` details:
 
 | Setting | Value | Why |
 |---|---|---|
-| `TARGET` | `mastering` | names the `.bin` |
+| `TARGET` | `lapis_philosophorum_v$(VERSION)` | names the `.bin`; version read from `src/version.h` (§5) |
 | `BOARD` | `v2` (default), `v1` | selects BSP sources + `-DALCHEMY_BOARD_V2` |
 | `APP_TYPE` | `BOOT_SRAM` | runs from SRAM under the Alchemy bootloader |
 | `LDSCRIPT` | `alchemy_stm32h750ib_sram.lds` | matching linker script |
@@ -976,6 +977,64 @@ endif
 Switching `BOARD=` wipes the object tree automatically. Without this you'd
 get a silently mislinked binary mixing v1 and v2 objects, since the
 filenames are identical.
+
+### Versioning
+
+`src/version.h` is the single source of truth, currently **0.5.0**:
+
+```c
+#define LAPIS_VERSION_MAJOR 0
+#define LAPIS_VERSION_MINOR 5
+#define LAPIS_VERSION_PATCH 0
+#define LAPIS_VERSION_STR   "0.5.0"
+```
+
+Nothing else defines a version. The Makefile *reads* the string back with
+a `sed` one-liner and folds it into `TARGET`, so the artifacts are named
+`build/lapis_philosophorum_v0.5.0.{bin,elf,hex,map}` — which is why
+`LAPIS_VERSION_STR` has to stay on one line with its value in double
+quotes (the `sed` is deliberately strict, and an empty match is a hard
+`$(error)` rather than a binary named `..._v.bin`). Bumping the version
+therefore changes the artifact name, and the previous release's `.bin`
+survives in `build/` until the next `make clean`. `program-dfu` builds its
+path from `TARGET`, so flashing needs no extra argument.
+
+`lapis::kVersion` packs the three numbers as `0xMMmmpp` so builds compare
+with `<` and `>`.
+
+Bump PATCH for fixes that change no control behaviour, MINOR for new
+controls or audible changes, MAJOR for a break in the preset schema or
+panel layout. Note that the preset schema has its own guard —
+`Presets::SchemaHash` — and it, not the version number, is what actually
+invalidates stored slots.
+
+**The version is also compiled into the image**, since a filename is only
+a convention and the module has no display to report the version on:
+
+```sh
+strings build/lapis_philosophorum_v0.5.0.bin | grep Lapis   # → LapisPhilosophorum 0.5.0
+```
+
+That works because of a two-part arrangement in `mastering.cpp`, and both
+parts are load-bearing:
+
+```c
+__attribute__((used, section(".rodata.version")))
+static const char kVersionBanner[] = "LapisPhilosophorum " LAPIS_VERSION_STR;
+
+int main()
+{
+    asm volatile("" : : "r"(kVersionBanner));   // anchor against --gc-sections
+```
+
+`used` only stops the *compiler* discarding an unreferenced static. The
+link runs with `-Wl,--gc-sections`, and the linker will happily drop the
+whole section anyway — it did, on the first attempt here, silently
+producing a binary with no version in it. The empty `asm volatile` takes
+the address, costs no code and no cycles, and is the only thing keeping
+the string alive. Don't delete it, and if you move the banner, move the
+anchor with it. (`KEEP()` in the linker script would be the tidier fix,
+but that script belongs to the SDK submodule.)
 
 ### Gotchas
 

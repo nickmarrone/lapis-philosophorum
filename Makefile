@@ -1,5 +1,6 @@
 # =============================================================================
-# alchemy-template — Daisy-bootloader firmware for Hermetic Modular Alchemy Lab
+# Lapis Philosophorum — Daisy-bootloader firmware for Hermetic Modular
+# Alchemy Lab
 #
 # Standard Daisy workflow (libDaisy core Makefile underneath):
 #   make libdaisy       — build lib/libDaisy once after cloning
@@ -8,7 +9,18 @@
 #   make clean          — remove the build tree
 # =============================================================================
 
-TARGET = mastering
+# Version lives in src/version.h, which is the single source of truth — this
+# only reads it back to name the artifacts, and never sets it.
+VERSION := $(shell sed -n 's/^\#define[ \t]*LAPIS_VERSION_STR[ \t]*"\(.*\)".*/\1/p' src/version.h)
+ifeq ($(VERSION),)
+$(error could not read LAPIS_VERSION_STR from src/version.h)
+endif
+
+# Artifacts carry the version: build/lapis_philosophorum_v0.5.0.{bin,elf,hex,map}.
+# Bumping version.h therefore produces a differently-named .bin, and the old
+# one stays behind — `make clean` between releases if that bothers you.
+TARGET = lapis_philosophorum_v$(VERSION)
+$(info Building $(TARGET))
 
 # Alchemy Lab board revision: v1 | v2
 BOARD ?= v2

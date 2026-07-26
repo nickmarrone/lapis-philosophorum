@@ -1,7 +1,9 @@
-# Mastering — User Guide
+# Lapis Philosophorum — User Guide
 
 An end-of-chain stereo mastering processor for the Hermetic Modular
 Alchemy Lab. Patch your mix in, get a louder, glued, ceiling-safe mix out.
+
+This guide describes firmware **v0.5.0**.
 
 Everything is **stereo-linked**: there is one set of controls, and one gain
 is applied to both channels, so the image never shifts because one side got
@@ -625,6 +627,12 @@ always warm.
    [Hermetic Modular Web Programmer](https://hermeticmodular.com/program),
    or from a checkout of this repo with `make program-dfu`.
 
+Release files are named for their version —
+`lapis_philosophorum_v0.5.0.bin`. The module has no display, so it cannot
+show you which firmware it is running; the version is stamped inside the
+image as well, so a file that has been renamed can still be identified
+with `strings lapis_philosophorum_v0.5.0.bin | grep Lapis`.
+
 **CV calibration** (unrelated to this firmware, but stored per-board):
 unpatch all CV jacks and hold **B1 + B2** while the board resets. The
 panel narrates a ~15 second procedure and reboots. The calibration record
@@ -636,6 +644,7 @@ survives reflashes.
 
 | | |
 |---|---|
+| Firmware version | 0.5.0 |
 | Sample rate | 48 kHz |
 | Audio block size | 24 samples |
 | Converter word length | 24-bit |

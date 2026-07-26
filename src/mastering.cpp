@@ -1,5 +1,6 @@
 /**
- * mastering.cpp — Alchemy Lab stereo-linked mastering chain.
+ * mastering.cpp — Lapis Philosophorum, an Alchemy Lab stereo-linked
+ * mastering chain.
  * In -> EQ -> Compressor -> Tape Saturation -> Trim -> Limiter -> Dither -> Out.
  *
  * Pure DSP in mastering_dsp.* implements:
@@ -41,8 +42,17 @@
 #include "mastering_dsp.h"
 #include "mastering_palette.h"
 #include "mod_source.h"
+#include "version.h"
 
 using namespace alchemy;
+
+/* Version stamp, compiled into the image so a stray .bin can be identified
+ * after the fact: `strings build/lapis_philosophorum.bin | grep Lapis`.
+ * `used` stops the *compiler* dropping an unreferenced static, but the link
+ * runs with --gc-sections, which discards the section anyway — main() takes
+ * the address to anchor it. Keep that reference if you move this. */
+__attribute__((used, section(".rodata.version")))
+static const char kVersionBanner[] = "LapisPhilosophorum " LAPIS_VERSION_STR;
 
 /* ── Page 1 — EQ (amber) ─────────────────────────────────────────────────
  * K1/K3/K5 are Level rings (freq); K2/K4/K6 are Bipolar rings (gain). */
@@ -634,6 +644,10 @@ static void EnableFlushToZero()
 
 int main()
 {
+    /* Anchors kVersionBanner against --gc-sections. The asm consumes the
+     * pointer and emits nothing, so this costs no code and no cycles. */
+    asm volatile("" : : "r"(kVersionBanner));
+
     EnableFlushToZero();
 
     hw.Init();
