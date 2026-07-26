@@ -149,7 +149,11 @@ static VirtualKnob bump = VirtualKnob(4, "Head Bump")
     .Ring(Level(kSatPalette.arc));
 
 /* ── Page 4 — Output (red) ────────────────────────────────────────────────
- * K1/K2/K4 are Level rings; K3 (Trim) is Bipolar. */
+ * K1/K2 are Level rings; K3 (Trim) is Bipolar.
+ *
+ * K4 used to be a 0..2 LSB Dither depth. Dither is now fixed at
+ * mastering_dsp::kDitherLsb and the pot is free — see that constant for why a
+ * control over it was never doing anything a patch could hear. */
 
 static VirtualKnob ceiling = VirtualKnob(0, "Ceiling")
     .Linear(-6.f, -0.1f)
@@ -164,10 +168,6 @@ static VirtualKnob trim = VirtualKnob(2, "Trim")
     .Ring(Bipolar(kOutPalette.bipolar_pos,
                   kOutPalette.bipolar_neg,
                   kOutPalette.bipolar_center));
-
-static VirtualKnob dither = VirtualKnob(3, "Dither")
-    .Linear(0.f, 2.f)
-    .Ring(Level(kOutPalette.arc));
 
 /* ── Page 4, K5/K6 — CV modulation source ────────────────────────────────
  * The chain is stereo-linked with a single parameter set, so there is nothing
@@ -199,7 +199,7 @@ static Page eq_page   = Page(0).Knobs(ls_freq, ls_gain, mid_freq, mid_gain,
 static Page comp_page = Page(1).Knobs(thresh, ratio, attack, release,
                                       makeup, mix);
 static Page sat_page  = Page(2).Knobs(drive, sat_mix, emphasis, asym, bump);
-static Page out_page  = Page(3).Knobs(ceiling, lim_rel, trim, dither,
+static Page out_page  = Page(3).Knobs(ceiling, lim_rel, trim,
                                       mod_amount, mod_mode);
 
 /* Get our SDK surfaces and opt in to everything (no ParamLock, no CvMatrix —
@@ -510,7 +510,8 @@ static void UpdateParams()
     });
 
     mastering_dsp::SetOutput({
-        ceiling.Value(), lim_rel.Value(), trim.Value(), dither.Value(),
+        ceiling.Value(), lim_rel.Value(), trim.Value(),
+        mastering_dsp::kDitherLsb,
         modes.lim_bypass != 0,
     });
 

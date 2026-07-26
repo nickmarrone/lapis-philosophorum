@@ -290,6 +290,39 @@ int main()
                   Fmt("%.2f dBFS at 0 dB trim, ", floor_db[0])
                       + Fmt("%.2f dBFS at +12 dB", floor_db[1]));
     }
+    {
+        // The chain quantises to the 24-bit grid itself, round-to-nearest,
+        // because libDaisy's f2s24 truncates toward zero and would otherwise
+        // give the zero bin a two-LSB deadband that swallows the dither whole.
+        //
+        // Two claims, and the first is what makes the second meaningful:
+        //   1. every output sample is an exact multiple of 2^-23, so f2s24 has
+        //      nothing left to truncate and its cast is a no-op;
+        //   2. with dither on and digital silence in, the output is NOT
+        //      identically zero — which is precisely what it was before this,
+        //      for 2^21 consecutive samples.
+        Settings s       = Neutral();
+        s.out.dither_lsb = mastering_dsp::kDitherLsb;
+        Chain ch;
+        ch.Boot(s);
+        std::vector<float> out;
+        ch.RunSteady([](long, float* l, float* r) { *l = *r = 0.f; }, 48000, &out);
+
+        bool   on_grid = true;
+        size_t nonzero = 0;
+        for (float v : out)
+        {
+            const float scaled = v * 8388608.f;
+            if (scaled != std::floor(scaled)) on_grid = false;
+            if (v != 0.f) nonzero++;
+        }
+        rep.Check(on_grid, "every output sample lands on the 24-bit grid",
+                  Fmt("%.0f samples checked", (double)out.size()));
+        rep.Check(nonzero > out.size() / 100,
+                  "dither survives quantisation at digital silence",
+                  Fmt("%.0f of %.0f samples nonzero", (double)nonzero,
+                      (double)out.size()));
+    }
 
     /* ── 4. The ceiling, end to end ──────────────────────────────────────── */
     rep.Section("The ceiling holds with the whole chain in front of it");

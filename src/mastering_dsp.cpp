@@ -379,8 +379,22 @@ void Process(daisy::AudioHandle::InputBuffer  in,
         // predictable branch per sample when the mode is not selected.
         anl_.ProcessSample(l, r);
 
-        out[0][i] = l;
-        out[1][i] = r;
+        // Quantise to the 24-bit grid ourselves, round-to-nearest.
+        //
+        // libDaisy's f2s24 is `(int32_t)(x * 8388608.0f)` — a C cast, so it
+        // truncates toward zero. That makes the zero bin two LSBs wide instead
+        // of one, and a quantiser with a double-width bin is not one the dither
+        // above can linearise: measured here, digital silence with dither at
+        // 1 LSB produced all-zero output for 2^21 consecutive samples, i.e. the
+        // dither stage was arithmetically discarded rather than merely
+        // inaudible. Landing on the grid first leaves f2s24 nothing to truncate.
+        //
+        // Exact by construction: roundf gives an integer N, |N| <= 2^23 fits
+        // float32's mantissa without loss, and scaling by a power of two is
+        // exact both ways — so f2s24's own multiply reproduces N and its cast
+        // is a no-op. (It clamps to +/-1 first, which the limiter guarantees.)
+        out[0][i] = roundf(l * 8388608.f) * (1.f / 8388608.f);
+        out[1][i] = roundf(r * 8388608.f) * (1.f / 8388608.f);
     }
 }
 
