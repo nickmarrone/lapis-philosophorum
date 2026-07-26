@@ -231,7 +231,8 @@ void ModSource::SetParams(const Params& p)
 
     const uint8_t zones = SecondaryZones(params_.mode);
     if (params_.secondary >= zones) params_.secondary = 0;
-    params_.knob = Clamp01(params_.knob);
+    params_.knob_a = Clamp01(params_.knob_a);
+    params_.knob_b = Clamp01(params_.knob_b);
 
     /* A mode change restarts the generators rather than resuming mid-gesture,
      * so switching in reads as a deliberate new patch instead of picking up
@@ -275,7 +276,7 @@ void ModSource::OnClock(uint32_t t_us)
         {
             const uint8_t steps  = kEuclidSteps[k];
             const uint8_t pulses = static_cast<uint8_t>(
-                params_.knob * static_cast<float>(steps) + 0.5f);
+                params_.knob_a * static_cast<float>(steps) + 0.5f);
             const uint32_t pattern = EuclidPattern(steps, pulses, rotation);
             const uint8_t  step    = static_cast<uint8_t>(clock_count_ % steps);
             if (pattern & (1u << step))
@@ -299,7 +300,7 @@ void ModSource::ApplyReset()
 
 AnalysisResponse ModSource::Response() const
 {
-    const float k = params_.knob;
+    const float k = params_.knob_a;
     AnalysisResponse r;
     /* Geometric interpolation — these span two decades, so a linear sweep
      * would spend most of the knob in the slow half. */
@@ -362,7 +363,7 @@ void ModSource::TickClocked(Frame& out)
     /* Spread fans the four outputs to 0 / 90 / 180 / 270 degrees at full
      * travel. The stepped-random out is included by offsetting the phase it
      * re-samples on, so it moves with the others rather than ignoring K5. */
-    const float spread = params_.knob * 0.25f;
+    const float spread = params_.knob_a * 0.25f;
 
     /* Jacks 0 and 1 are clock and reset in; the four outputs are 2..5. */
     const float p_sine = Wrap01(phase_[0] + 0.f * spread);
@@ -385,7 +386,7 @@ void ModSource::TickClocked(Frame& out)
 void ModSource::TickMultiLfo(Frame& out)
 {
     const float base = kLfoBaseHzMin *
-        powf(kLfoBaseHzMax / kLfoBaseHzMin, params_.knob);
+        powf(kLfoBaseHzMax / kLfoBaseHzMin, params_.knob_a);
 
     const float* ratios = Ratios(
         static_cast<RatioSet>(params_.secondary % 3));
@@ -399,7 +400,7 @@ void ModSource::TickMultiLfo(Frame& out)
 
 void ModSource::TickSmoothRandom(Frame& out)
 {
-    const float d    = params_.knob;                       // divergence
+    const float d    = params_.knob_a;                       // divergence
     const float base = kRandomBaseHz[params_.secondary % 3];
 
     /* The shared walk always runs; at divergence 0 it is the only thing on

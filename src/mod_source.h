@@ -53,9 +53,23 @@ enum class Mode : uint8_t {
  *  future mode without a secondary report 1, which makes the tap a no-op. */
 uint8_t SecondaryZones(Mode m);
 
+/**
+ * The active mode's controls.
+ *
+ * `knob_a` is the mode's primary axis and `knob_b` its character; what that
+ * means per mode:
+ *
+ *              knob_a (K3)          knob_b (K4)         secondary (B3)
+ *   Analysis   follower speed       sensitivity         polarity
+ *   Clocked    shape rotation       shape spread        clock ratio
+ *   MultiLfo   base rate            shape               ratio set
+ *   SmoothRnd  divergence           smooth <-> stepped  rate range
+ *   Euclid     pulse density        gate length         step-length set
+ */
 struct Params {
     Mode    mode      = Mode::Off;
-    float   knob      = 0.f;   // K5, 0..1
+    float   knob_a    = 0.f;   // K3, 0..1
+    float   knob_b    = 0.f;   // K4, 0..1
     uint8_t secondary = 0;     // B3 index, < SecondaryZones(mode)
 };
 

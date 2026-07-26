@@ -149,11 +149,17 @@ static VirtualKnob bump = VirtualKnob(4, "Head Bump")
     .Ring(Level(kSatPalette.arc));
 
 /* ── Page 4 — Output (red) ────────────────────────────────────────────────
- * K1/K2 are Level rings; K3 (Trim) is Bipolar.
+ * K1/K2 are the limiter and K6 is Trim; K3/K4/K5 are the modulation source.
+ *
+ * The modulation block is contiguous and sits between them on purpose: K5
+ * picks the mode and the two knobs to its left are that mode's parameters, so
+ * everything whose meaning changes with the mode is grouped, and everything
+ * with a fixed meaning (Ceiling, Lim Rel, Trim) is outside the group.
  *
  * K4 used to be a 0..2 LSB Dither depth. Dither is now fixed at
- * mastering_dsp::kDitherLsb and the pot is free — see that constant for why a
- * control over it was never doing anything a patch could hear. */
+ * mastering_dsp::kDitherLsb and the pot went to the modulation source — see
+ * that constant for why a control over it was never doing anything a patch
+ * could hear. Trim moved to K6 to keep the three mod pots adjacent. */
 
 static VirtualKnob ceiling = VirtualKnob(0, "Ceiling")
     .Linear(-6.f, -0.1f)
@@ -163,32 +169,41 @@ static VirtualKnob lim_rel = VirtualKnob(1, "Lim Rel")
     .Exp(10.f, 500.f)
     .Ring(Level(kOutPalette.arc));
 
-static VirtualKnob trim = VirtualKnob(2, "Trim")
+static VirtualKnob trim = VirtualKnob(5, "Trim")
     .Linear(-12.f, 12.f)
     .Ring(Bipolar(kOutPalette.bipolar_pos,
                   kOutPalette.bipolar_neg,
                   kOutPalette.bipolar_center));
 
-/* ── Page 4, K5/K6 — CV modulation source ────────────────────────────────
+/* ── Page 4, K3/K4/K5 — CV modulation source ─────────────────────────────
  * The chain is stereo-linked with a single parameter set, so there is nothing
- * on the panel worth CV-modulating and the six jacks sat unused. K6 turns them
- * into a modulation source instead: five modes plus Off, with K5 as the
- * active mode's continuous control and a B3 tap as its discrete secondary.
+ * on the panel worth CV-modulating and the six jacks sat unused. K5 turns them
+ * into a modulation source instead: five modes plus Off, with K3 and K4 as the
+ * active mode's two continuous controls and a B3 tap as its discrete secondary.
  *
- * K6 pairs a Selector transform with a Gradient ring on purpose. Value()
+ * The split between the two knobs is per-mode and documented in mod_source.h,
+ * but the shape of it is consistent: K3 is the mode's primary axis — how much,
+ * how fast, how spread — and K4 is its character. The one exception is
+ * Analysis, which has no waveform to characterise and uses K4 for sensitivity.
+ *
+ * K5 pairs a Selector transform with a Gradient ring on purpose. Value()
  * snaps to a zone while Norm() stays continuous, so the arc morphs smoothly
  * between mode colours as you sweep and the snap pip confirms where it
  * landed — the pattern virtual_knob.h documents for exactly this case.
  *
- * K5 uses GradientFill against the same snap table with src_pot = 5, so the
- * amount knob is always painted in the colour of the mode it is controlling.
- * Without that, two adjacent knobs would be red on a page where one of them
- * means something completely different in each of six positions. */
-static VirtualKnob mod_amount = VirtualKnob(4, "Mod")
+ * K3 and K4 both use GradientFill against the same snap table with
+ * src_pot = 4, so both parameter knobs are always painted in the colour of the
+ * mode controlling them. Without that, three adjacent knobs would be red on a
+ * page where two of them mean something different in each of six positions. */
+static VirtualKnob mod_a = VirtualKnob(2, "Mod A")
     .Linear(0.f, 1.f)
-    .Ring(GradientFill(kModeSnaps, 6, /*src_pot=*/5, kPageRed));
+    .Ring(GradientFill(kModeSnaps, 6, /*src_pot=*/4, kPageRed));
 
-static VirtualKnob mod_mode = VirtualKnob(5, "Mod Mode")
+static VirtualKnob mod_b = VirtualKnob(3, "Mod B")
+    .Linear(0.f, 1.f)
+    .Ring(GradientFill(kModeSnaps, 6, /*src_pot=*/4, kPageRed));
+
+static VirtualKnob mod_mode = VirtualKnob(4, "Mod Mode")
     .Selector(static_cast<uint8_t>(mod_source::Mode::kCount))
     .Ring(Gradient(kModeSnaps, 6))
     .Pip(GradientSnapPip());
@@ -199,8 +214,8 @@ static Page eq_page   = Page(0).Knobs(ls_freq, ls_gain, mid_freq, mid_gain,
 static Page comp_page = Page(1).Knobs(thresh, ratio, attack, release,
                                       makeup, mix);
 static Page sat_page  = Page(2).Knobs(drive, sat_mix, emphasis, asym, bump);
-static Page out_page  = Page(3).Knobs(ceiling, lim_rel, trim,
-                                      mod_amount, mod_mode);
+static Page out_page  = Page(3).Knobs(ceiling, lim_rel, mod_a, mod_b,
+                                      mod_mode, trim);
 
 /* Get our SDK surfaces and opt in to everything (no ParamLock, no CvMatrix —
  * this chain is stereo-linked with a single param set, nothing to record). */
@@ -267,8 +282,18 @@ struct ChainModes : public alchemy::Serializable
         return true;
     }
 
-    /* MST4. Bumped from MST3 when the CV modulation source arrived and added
-     * six per-mode secondary bytes.
+    /* MST5. Bumped from MST4 when the Output page was relaid out: Trim moved
+     * from pot 2 to pot 5, the mode selector from pot 5 to pot 4, and pots 2
+     * and 3 became the modulation source's two parameter knobs. Nothing about
+     * the *serialised* layout changed — but every stored pot position on page
+     * 4 now means something different, and Pager's own SchemaHash cannot see
+     * that, since num_pages and num_pots are both unchanged. Loading an MST4
+     * slot would silently apply the old Trim value as a shape rotation and the
+     * old Dither depth as a shape spread. The bump is the only thing standing
+     * between a preset and that.
+     *
+     * MST4 was the CV modulation source arriving with six per-mode secondary
+     * bytes; MST3 predates it.
      *
      * The Pager does NOT invalidate independently this time — its own
      * SchemaHash folds in num_pages, which is still 4, and num_pots, still 6.
@@ -277,11 +302,11 @@ struct ChainModes : public alchemy::Serializable
      * gate in HasValid and nothing is deserialized, Pager included.
      *
      * That matters more than it sounds. Pager's default stored value is 0.5,
-     * and 0.5 on K6's Selector(6) is MultiLfo — so without the guard in main()
+     * and 0.5 on K5's Selector(6) is MultiLfo — so without the guard in main()
      * a module with an old preset (or no preset at all) would boot with six
-     * LFOs already driving the jacks. main() forces K6 to Off whenever
+     * LFOs already driving the jacks. main() forces K5 to Off whenever
      * BootLoad returns false; that is what makes this bump safe. */
-    uint32_t SchemaHash() const override { return 0x4D535434u; }
+    uint32_t SchemaHash() const override { return 0x4D535435u; }
 };
 static ChainModes modes;
 
@@ -522,12 +547,12 @@ static void UpdateParams()
      * resuming whatever phase the previous mode left behind. */
     const mod_source::Mode mode =
         static_cast<mod_source::Mode>(mod_mode_idx);
-    mod_engine.SetParams({mode, mod_amount.Norm(),
+    mod_engine.SetParams({mode, mod_a.Norm(), mod_b.Norm(),
                           modes.mod_secondary[mod_mode_idx]});
 
     /* Gate the analysis followers on the mode that consumes them, so the
      * other five cost one predictable branch per sample instead of a band
-     * split. The times come from the same K5 the mode is reading. */
+     * split. The times come from the same K3 the mode is reading. */
     const mod_source::AnalysisResponse resp = mod_engine.Response();
     mastering_dsp::SetAnalysis(resp.attack_ms, resp.release_ms,
                                mode == mod_source::Mode::Analysis);
@@ -553,8 +578,8 @@ static void RenderButtons(uint32_t t_ms)
                                       : page_color);
 
     /* On the Output page B3 wears the active modulation mode's colour — the
-     * same hue K6's arc and K5's fill are showing, so one glance ties the two
-     * knobs and the button together. Off maps to kModOffColor, which is the
+     * same hue K5's arc and K3/K4's fills are showing, so one glance ties the
+     * three knobs and the button together. Off maps to kModOffColor, the
      * dim "nothing to cycle here" the page used to show unconditionally. */
     LedPanel::Rgb mode_color;
     switch (page) {
@@ -631,17 +656,17 @@ int main()
     mod_engine.Init(1000.f, 0x5EEDBEEFu);
     mod_gate.Init(kNumCvInputs);
 
-    /* Force K6 to Off unless a current-schema preset actually restored it.
+    /* Force K5 to Off unless a current-schema preset actually restored it.
      *
-     * Presets::SchemaHash is the XOR of every managed component, so the MST3
-     * -> MST4 bump invalidates the whole slot: HasValid fails and nothing is
+     * Presets::SchemaHash is the XOR of every managed component, so the MST4
+     * -> MST5 bump invalidates the whole slot: HasValid fails and nothing is
      * deserialized, Pager included. Pager's default stored value is 0.5, and
-     * 0.5 on K6's Selector(6) is MultiLfo — so a module with an old preset,
+     * 0.5 on K5's Selector(6) is MultiLfo — so a module with an old preset,
      * or a virgin module with no preset at all, would otherwise come up with
      * six LFOs already driving the jacks before the user touched anything.
      *
      * SetStored re-arms catch against the physical pot position, so this does
-     * not fight the user: K6 stays at Off until they sweep through it. Settle
+     * not fight the user: K5 stays at Off until they sweep through it. Settle
      * the ADC first, or catch would re-arm against a pot buffer still full of
      * zeros and the knob could grab on the first frame. */
     if (!restored)
@@ -653,7 +678,7 @@ int main()
         }
         float phys[kNumPots];
         for (uint8_t i = 0; i < kNumPots; i++) phys[i] = hw.pots[i].Value();
-        pager.SetStored(3, 5, 0.f, phys);
+        pager.SetStored(3, 4, 0.f, phys);
     }
 
     UpdateParams();

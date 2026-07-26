@@ -174,11 +174,12 @@ bool MaximallyEven(uint32_t mask, uint8_t steps, int& out_pulses)
     return (gmax - gmin) <= 1;
 }
 
-ModSource Make(Mode mode, float knob, uint8_t secondary, uint32_t seed = 12345u)
+ModSource Make(Mode mode, float knob_a, uint8_t secondary, uint32_t seed = 12345u,
+               float knob_b = 0.f)
 {
     ModSource m;
     m.Init(kTickHz, seed);
-    m.SetParams({mode, knob, secondary});
+    m.SetParams({mode, knob_a, knob_b, secondary});
     return m;
 }
 
@@ -626,7 +627,7 @@ int main()
         /* An out-of-range secondary must be clamped, not indexed with. */
         ModSource m;
         m.Init(kTickHz, 99u);
-        m.SetParams({Mode::Clocked, 0.5f, 200});
+        m.SetParams({Mode::Clocked, 0.5f, 0.5f, 200});
         Frame f;
         for (int i = 0; i < 10; i++) m.Tick(f);
         rep.Check(true, "out-of-range secondary is clamped on entry",
