@@ -140,7 +140,7 @@ class ModSource {
     /** Follower times Mode::Analysis wants for the current K5 position. */
     AnalysisResponse Response() const;
 
-    /** Full-scale reference in dB for Mode::Analysis, from the B3 secondary. */
+    /** Full-scale reference in dB for Mode::Analysis, swept by knob_b. */
     float SensitivityDb() const;
 
     Mode ActiveMode() const { return params_.mode; }

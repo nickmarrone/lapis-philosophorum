@@ -688,16 +688,63 @@ int main()
         const int fast = rise_ticks(1.f);
         const int slow = rise_ticks(100.f);
         rep.Check(slow > fast * 20,
-                  "K5 actually changes the follower speed",
+                  "K3 actually changes the follower speed",
                   Fmt("%.0f samples fast vs %.0f slow", (double)fast,
                       (double)slow));
+    }
+
+    rep.Section("Analysis — sensitivity and polarity");
+    {
+        /* Sensitivity is continuous on K4 now, and knob up means more
+         * sensitive, i.e. a deeper floor. */
+        ModSource shallow = Make(Mode::Analysis, 0.f, 0, 12345u, 0.f);
+        ModSource deep    = Make(Mode::Analysis, 0.f, 0, 12345u, 1.f);
+        rep.Check(shallow.SensitivityDb() > deep.SensitivityDb(),
+                  "knob up is more sensitive",
+                  Fmt("%.1f dB at 0, ", (double)shallow.SensitivityDb())
+                      + Fmt("%.1f dB at 1", (double)deep.SensitivityDb()));
+
+        ModSource mid = Make(Mode::Analysis, 0.f, 0, 12345u, 0.5f);
+        rep.Check(mid.SensitivityDb() < shallow.SensitivityDb() &&
+                      mid.SensitivityDb() > deep.SensitivityDb(),
+                  "the sweep is monotonic through the middle",
+                  Fmt("%.1f dB at 0.5", (double)mid.SensitivityDb()));
+
+        /* Polarity: a signal that reads high normally must read low inverted,
+         * and the two must sum to full scale on every jack. */
+        const Analysis probe{0.6f, 0.3f, 0.1f, 0.5f, 6.f, 3.f};
+
+        ModSource norm = Make(Mode::Analysis, 0.f, /*secondary=*/0, 12345u, 0.5f);
+        ModSource inv  = Make(Mode::Analysis, 0.f, /*secondary=*/1, 12345u, 0.5f);
+        norm.SetAnalysis(probe);
+        inv.SetAnalysis(probe);
+
+        Frame fn, fi;
+        norm.Tick(fn);
+        inv.Tick(fi);
+
+        bool   complementary = true;
+        bool   any_moved     = false;
+        double worst         = 0.0;
+        for (uint8_t j = 0; j < kNumJacks; j++)
+        {
+            const double sum = fn.volts[j] + fi.volts[j];
+            const double err = std::fabs(sum - (double)kUnipolarVolts);
+            if (err > worst) worst = err;
+            if (err > 1e-4) complementary = false;
+            if (std::fabs(fn.volts[j] - fi.volts[j]) > 0.1) any_moved = true;
+        }
+        rep.Check(complementary,
+                  "inverted is normal mirrored about full scale",
+                  Fmt("worst sum error %.2e V", worst));
+        rep.Check(any_moved, "polarity actually changes the outputs", "");
     }
 
     /* ── Secondary zone table ────────────────────────────────────────── */
     rep.Section("Secondary zones");
     {
         rep.Check(SecondaryZones(Mode::Off) == 1, "Off has no secondary", "");
-        rep.Check(SecondaryZones(Mode::Analysis) == 3, "Analysis has 3", "");
+        rep.Check(SecondaryZones(Mode::Analysis) == 2, "Analysis has 2", "");
         rep.Check(SecondaryZones(Mode::Clocked) == 5, "Clocked has 5", "");
         rep.Check(SecondaryZones(Mode::MultiLfo) == 3, "MultiLfo has 3", "");
         rep.Check(SecondaryZones(Mode::SmoothRandom) == 3, "SmoothRandom has 3", "");

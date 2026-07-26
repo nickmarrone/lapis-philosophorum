@@ -14,10 +14,16 @@ constexpr float kTwoPi = 6.28318530718f;
 
 /* ── Mode::Analysis ──────────────────────────────────────────────────── */
 
-/* Full-scale references the B3 secondary cycles. A mastering chain's program
- * material sits within ~20 dB of full scale, so -20 is the useful setting on
- * loud material and -60 is what you want when the chain is nearly idle. */
-constexpr float kSensitivityDb[3] = {-60.f, -40.f, -20.f};
+/* Full-scale reference, swept by K4. A mastering chain's program material sits
+ * within ~20 dB of full scale, so the shallow end suits loud material and the
+ * deep end is what you want when the chain is nearly idle.
+ *
+ * Knob up is more sensitive, i.e. a deeper floor, because that is what the
+ * word means on the panel. This lived on B3 as three fixed steps 20 dB apart
+ * and was the wrong parameter to put there: it is the gain staging, it gets
+ * set by ear against whatever is playing, and cycling it blind past two other
+ * values to get back where you were is the worst affordance in the section. */
+constexpr float kSensFloorShallowDb = -10.f, kSensFloorDeepDb = -70.f;
 
 /* Gain reduction gets its own full scale rather than borrowing the band
  * sensitivity — 20 dB of reduction is already a lot, and tying it to the band
@@ -169,7 +175,7 @@ uint8_t SecondaryZones(Mode m)
 {
     switch (m)
     {
-        case Mode::Analysis:     return 3;   // sensitivity
+        case Mode::Analysis:     return 2;   // polarity: normal / inverted
         case Mode::Clocked:      return 5;   // clock ratio
         case Mode::MultiLfo:     return 3;   // ratio set
         case Mode::SmoothRandom: return 3;   // rate range
@@ -346,7 +352,7 @@ AnalysisResponse ModSource::Response() const
 
 float ModSource::SensitivityDb() const
 {
-    return kSensitivityDb[params_.secondary % 3];
+    return Lerp(kSensFloorShallowDb, kSensFloorDeepDb, params_.knob_b);
 }
 
 /* ── Tick ────────────────────────────────────────────────────────────── */
@@ -385,6 +391,16 @@ void ModSource::TickAnalysis(Frame& out)
                    Clamp01(analysis_.comp_gr_db / kGrFullScaleDb);
     out.volts[5] = kUnipolarVolts *
                    Clamp01(analysis_.lim_gr_db / kGrFullScaleDb);
+
+    /* Inverted polarity is the duck-on-loud patch: full volts at silence,
+     * falling to zero as the chain fills up. There is no way to get it
+     * downstream without an external inverter, and these outputs are unipolar
+     * so they can only ever push in one direction on their own. Applied to
+     * the gain-reduction pair as well, where it reads as headroom remaining
+     * rather than reduction applied. */
+    if (params_.secondary != 0)
+        for (uint8_t j = 0; j < kNumJacks; j++)
+            out.volts[j] = kUnipolarVolts - out.volts[j];
 }
 
 void ModSource::TickClocked(Frame& out)
