@@ -23,6 +23,7 @@ SRESPONSE := $(BUILD)/sat_response_test
 SCONTROL  := $(BUILD)/sat_control_test
 LRESPONSE := $(BUILD)/lim_response_test
 CHAIN     := $(BUILD)/chain_test
+MODSRC    := $(BUILD)/mod_source_test
 
 REPORT    := test_report.h
 COMMON    := eq_test_common.h $(REPORT) ../src/dsp_biquad.h
@@ -34,6 +35,9 @@ LIM_COMMON := lim_test_common.h $(REPORT) ../src/dsp_limiter.h ../src/dsp_common
               ../src/dsp_halfband.h
 CHAIN_COMMON := chain_test_common.h $(REPORT) ../src/mastering_dsp.h \
               ../src/dsp_limiter.h ../src/dsp_common.h ../src/dsp_halfband.h
+MOD_COMMON := $(REPORT) ../src/mod_source.h ../src/dsp_analysis.h \
+              ../src/dsp_common.h
+MOD_SRC   := ../src/mod_source.cpp
 DSP_SRC   := ../src/mastering_dsp.cpp
 DSP_HDRS  := ../src/mastering_dsp.h ../src/dsp_common.h ../src/dsp_compressor.h \
              ../src/dsp_limiter.h ../src/dsp_saturation.h ../src/dsp_dither.h \
@@ -81,8 +85,15 @@ $(LRESPONSE): lim_response_test.cpp $(LIM_COMMON) | $(BUILD)
 $(CHAIN): chain_test.cpp $(CHAIN_COMMON) $(DSP_SRC) $(DSP_HDRS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(DSP_SRC) -o $@
 
+# mod_source_test drives the CV modulation engine, which includes nothing from
+# libDaisy or the alchemy-sdk by design — so this links mod_source.cpp alone and
+# needs no stubs. dsp_analysis.h comes along for the band-split section and is
+# <cmath>-only like every other stage header.
+$(MODSRC): mod_source_test.cpp $(MOD_COMMON) $(MOD_SRC) | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(MOD_SRC) -o $@
+
 run: $(RESPONSE) $(CONTROL) $(CRESPONSE) $(CCONTROL) $(SRESPONSE) $(SCONTROL) \
-     $(LRESPONSE) $(CHAIN)
+     $(LRESPONSE) $(CHAIN) $(MODSRC)
 	@./$(RESPONSE)
 	@./$(CONTROL)
 	@./$(CRESPONSE)
@@ -91,6 +102,7 @@ run: $(RESPONSE) $(CONTROL) $(CRESPONSE) $(CCONTROL) $(SRESPONSE) $(SCONTROL) \
 	@./$(SCONTROL)
 	@./$(LRESPONSE)
 	@./$(CHAIN)
+	@./$(MODSRC)
 
 golden: $(RESPONSE) $(CRESPONSE) $(SRESPONSE)
 	@mkdir -p golden

@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include "alchemy/led/anims/color_morph_arc.h"   /* MorphSnapPoint */
 #include "alchemy/led/panel.h"
 
 /** Ring color set for one page. */
@@ -109,9 +110,50 @@ constexpr alchemy::LedPanel::Rgb kSatColors[3] = {
     {0xC0, 0x60, 0x00}, // Saturated - deep amber
 };
 
-/** Page 4 has no B3 mode. Dim white reads as "nothing to cycle here" rather
- *  than as an unlit LED, which would look like a fault. */
+/** Page 4's B3 used to have nothing to cycle. Dim white reads as "nothing here"
+ *  rather than as an unlit LED, which would look like a fault. Still used for
+ *  the Off modulation mode, where B3 genuinely has no secondary. */
 constexpr alchemy::LedPanel::Rgb kModeInert = {0x30, 0x30, 0x30};
+
+/* ── Page 4 — CV modulation source ───────────────────────────────────────
+ * K6 selects the mode, K5 is that mode's continuous control, and B3 cycles
+ * its discrete secondary.
+ *
+ * These colours do double duty and that is deliberate: K6 wears them as a
+ * Gradient arc that morphs between them as you sweep, K5 wears the active one
+ * as a GradientFill so the amount knob always matches the mode it controls,
+ * and B3 wears it too. One hue therefore identifies the mode in three places
+ * at once.
+ *
+ * Off is the page's own red, dimmed hard — the jacks are released and the
+ * page is just the Output page again. The five generators then walk the
+ * spectrum away from red so adjacent modes never read as the same colour at
+ * a glance.
+ *
+ * Positions are evenly spaced across the six Selector zones, sampled at each
+ * zone's centre so the morph reaches the pure colour where the value snaps. */
+constexpr alchemy::LedPanel::Rgb kModOffColor      = {0x40, 0x10, 0x10}; // dim red
+constexpr alchemy::LedPanel::Rgb kModAnalysisColor = {0xFF, 0x40, 0x00}; // orange
+constexpr alchemy::LedPanel::Rgb kModClockedColor  = {0xFF, 0xD0, 0x00}; // yellow
+constexpr alchemy::LedPanel::Rgb kModMultiLfoColor = {0x00, 0xD0, 0x40}; // green
+constexpr alchemy::LedPanel::Rgb kModRandomColor   = {0x00, 0x80, 0xFF}; // blue
+constexpr alchemy::LedPanel::Rgb kModEuclidColor   = {0xB0, 0x40, 0xFF}; // violet
+
+/** Zone centres for a Selector(6): (i + 0.5) / 6. */
+constexpr alchemy::MorphSnapPoint kModeSnaps[6] = {
+    {1.f / 12.f,  kModOffColor},
+    {3.f / 12.f,  kModAnalysisColor},
+    {5.f / 12.f,  kModClockedColor},
+    {7.f / 12.f,  kModMultiLfoColor},
+    {9.f / 12.f,  kModRandomColor},
+    {11.f / 12.f, kModEuclidColor},
+};
+
+/** Parallel to kModeSnaps, for the B3 button paint. */
+constexpr alchemy::LedPanel::Rgb kModeColors[6] = {
+    kModOffColor,      kModAnalysisColor, kModClockedColor,
+    kModMultiLfoColor, kModRandomColor,   kModEuclidColor,
+};
 
 /** Dim factor applied to a page/button color when its stage is bypassed. */
 constexpr float kBypassDim = 0.15f;

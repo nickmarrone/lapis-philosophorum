@@ -21,6 +21,19 @@
 
 namespace mastering_dsp {
 
+/**
+ * Dither depth the module ships with, in LSBs at 24-bit.
+ *
+ * This is not a user control. Dither at the output of a Eurorack module can
+ * only ever be a formality: the jacks carry an analog voltage, not a stored
+ * 24-bit deliverable, and anything an ADC upstream of us contributed is
+ * already ~80 LSBs of noise sitting on the signal — three orders of magnitude
+ * above anything we add here. It is kept because it is correct at the point
+ * of quantisation and costs two xorshift steps per sample, not because it is
+ * audible. It never was, at any knob position, which is why the knob is gone.
+ */
+constexpr float kDitherLsb = 2.f;
+
 struct EqParams {
     float ls_freq_hz, ls_gain_db;
     float mid_freq_hz, mid_gain_db, mid_q;
@@ -74,8 +87,27 @@ struct OutParams {
     float ceiling_db;       // -6..-0.1
     float lim_release_ms;   // 10..500
     float trim_db;          // -12..+12
-    float dither_lsb;       // 0..2 (LSBs @ 24-bit)
+    /* The module always passes kDitherLsb; there is no control for it. The
+     * field stays parameterised only so the test harness can set it to 0 and
+     * get a bit-deterministic chain for comparisons that would otherwise be
+     * swamped by the noise. */
+    float dither_lsb;
     bool  lim_bypass;
+};
+
+/**
+ * Envelope analysis published for the CV jacks (mod_source's Analysis mode).
+ * Bands are linear amplitude; the gain reductions are positive dB.
+ *
+ * Metering only — nothing here feeds back into the audio.
+ */
+struct ChainTelemetry {
+    float low        = 0.f;
+    float mid        = 0.f;
+    float high       = 0.f;
+    float broad      = 0.f;
+    float comp_gr_db = 0.f;
+    float lim_gr_db  = 0.f;
 };
 
 void  Init(float sample_rate);
@@ -84,6 +116,14 @@ void  SetComp(const CompParams&);   // control-rate; ms→coef, dB→lin
 void  SetSat(const SatParams&);     // control-rate; designs emphasis + bump
 void  SetOutput(const OutParams&);
 float CompGainReductionDb();        // >= 0 dB GR, for optional LED meter
+float LimGainReductionDb();         // >= 0 dB GR, derived from the applied gain
+
+/** Control-rate: follower times for the analysis path, plus its enable gate.
+ *  Disabled is the default and costs one branch per sample. */
+void  SetAnalysis(float attack_ms, float release_ms, bool enabled);
+
+/** Snapshot the analysis envelopes and both gain reductions. */
+void  ReadTelemetry(ChainTelemetry&);
 void  Process(daisy::AudioHandle::InputBuffer in,
               daisy::AudioHandle::OutputBuffer out, size_t n);
 }
