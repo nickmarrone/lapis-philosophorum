@@ -286,10 +286,10 @@ into `kMidQTable[]`, `kSatChars[]` or into the DSP. This is the cheap,
 correct discipline for flash-backed state — don't relax it. The
 `mod_secondary` clamp takes its modulus from
 `mod_source::SecondaryZones(mode)` rather than a literal, because the zone
-count differs per mode (Clocked has 5, Euclid 4, the rest 3) — a fixed
-modulus would be wrong for four of the six.
+count differs per mode (Clocked 5, Euclid 5, SmoothRandom 4, MultiLfo 3,
+Analysis 2) — a fixed modulus would be wrong for all but one of them.
 
-**`SchemaHash()` is a manual constant** (`0x4D535434` = "MST4"). The
+**`SchemaHash()` is a manual constant** (`0x4D535435` = "MST5"). The
 preset store XORs every managed component's hash and stamps slots with the
 result; a mismatch on load makes the slot read as empty rather than
 restoring misaligned bytes. **If you change `ChainModes`'s field layout or
@@ -297,14 +297,23 @@ size, bump this constant.** If you forget, old slots will deserialize into
 the new layout and produce garbage — the one failure mode the mechanism
 exists to prevent.
 
-It was last bumped MST3 → MST4 when the CV modulation source added the
-`mod_secondary` array. That bump carried a trap worth remembering: unlike
-the previous one, `Pager::SchemaHash()` did **not** change — page count
-stayed at 4 and pot count at 6 — so the only thing invalidating old slots
-was this constant. Because `Presets::SchemaHash()` is the XOR of every
+It was last bumped MST4 → MST5 when the Output page was relaid out. That
+bump is worth studying, because **nothing about the serialised layout
+changed at all** — `ChainModes` has exactly the same fields and the same
+size. What changed is what a stored *pot position* means: Trim moved from
+pot 2 to pot 5, the mode selector from pot 5 to pot 4, and pots 2 and 3
+became the modulation source's parameter knobs. `Pager::SchemaHash()`
+cannot see any of that — page count is still 4 and pot count still 6 — so
+an MST4 slot would have loaded cleanly and applied its Trim value as a
+shape rotation. **Bump the constant when the *meaning* of stored state
+changes, not only when its layout does.**
+
+The bump before it, MST3 → MST4, added the `mod_secondary` array, and
+carried a trap worth remembering: `Pager::SchemaHash()` did **not** change
+there either, so the only thing invalidating old slots was this constant. Because `Presets::SchemaHash()` is the XOR of every
 managed component, that is enough: `HasValid` fails and nothing is
 deserialized, `Pager` included. But then `Pager` falls back to its default
-stored value of `0.5`, and `0.5` on K6's `Selector(6)` is `MultiLfo` — so
+stored value of `0.5`, and `0.5` on K5's `Selector(6)` is `MultiLfo` — so
 the module would have booted with six LFOs already driving the CV jacks.
 `main()` guards it:
 
@@ -313,12 +322,12 @@ const bool restored = presets.BootLoad();
 ...
 if (!restored) {
     /* settle the ADC first, then: */
-    pager.SetStored(3, 5, 0.f, phys);   // force K6 to Off
+    pager.SetStored(3, 4, 0.f, phys);   // force K5 to Off
 }
 ```
 
 The ADC settle matters — `SetStored` re-arms pot catch against the physical
-position, and a zeroed `phys[]` would let K6 grab on the first frame. **Any
+position, and a zeroed `phys[]` would let K5 grab on the first frame. **Any
 future selector knob whose zero position is the safe one needs the same
 guard**; the Pager default is 0.5, not 0.
 
@@ -870,6 +879,30 @@ subtracted to give a triangular distribution, scaled to `dither_lsb ·
 a shared seed would produce correlated mono noise. **xorshift32 with a
 zero state is stuck at zero** — any new seed must be nonzero.
 
+`dither_lsb` is always `kDitherLsb`, i.e. 2. It used to be a knob and is
+not one any more: the jacks carry an analog voltage rather than a stored
+24-bit deliverable, and whatever ADC feeds the module has already put ~80
+LSBs of its own noise on the signal. `OutParams` keeps the field
+parameterised anyway, because several chain tests set it to 0 to get a
+bit-deterministic chain for comparisons the noise would otherwise swamp.
+
+**The chain quantises to the 24-bit grid itself**, round-to-nearest, in
+`Process()` immediately before writing `out[][]`. This is load-bearing for
+everything above. libDaisy's `f2s24` is `(int32_t)(x * 8388608.0f)` — a C
+cast, so it truncates toward zero, which makes the zero bin two LSBs wide
+instead of one. That is not a uniform quantiser and no amount of dither can
+linearise it: measured, digital silence with 1 LSB of dither produced
+2²¹ consecutive identically-zero output samples, with the dither stage
+running the whole time and being arithmetically discarded.
+
+Rounding first leaves `f2s24` nothing to truncate, and is exact by
+construction — `roundf` yields an integer N, |N| ≤ 2²³ fits float32's
+mantissa without loss, and scaling by a power of two is exact in both
+directions, so `f2s24`'s own multiply reproduces N and its cast is a no-op.
+`chain_test` pins both halves: every output sample lands on the grid, and
+at digital silence 56 % of samples are nonzero against 56.25 % predicted
+for 2 LSB TPDF under round-to-nearest.
+
 ### 4.3 Ordering decisions worth knowing
 
 - **Trim is pre-limiter**, so the ceiling is the last word on level.
@@ -887,8 +920,9 @@ zero state is stuck at zero** — any new seed must be nonzero.
   smooth it. At the pot's 8 ms smoothing a brisk sweep of the ±12 dB range
   delivers ~2 dB per 16 ms frame, i.e. a 26 % discontinuity in one sample —
   measured at 9.4e-3 against a program slew of 5.5e-3 before the ease.
-- **Dither is post-trim**, which is correct — dither belongs at the final
-  quantisation point, and scaling it afterward would defeat it.
+- **Dither is post-trim and post-limiter**, which is correct — dither
+  belongs at the final quantisation point, and scaling it afterward would
+  defeat it. The round-to-nearest quantisation is the only thing after it.
 - **The compressor detects post-EQ**, so EQ moves change how hard the
   compressor works.
 
@@ -1019,10 +1053,20 @@ relocation` at link time rather than an obvious "no such file".
 5. Add a colour to `kModeSnaps` and `kModeColors` in
    `mastering_palette.h`, and re-space every `position` — they are zone
    centres, `(i + 0.5) / kCount`.
-6. Add a section to `mod_source_test.cpp`. Measure the property the mode
+6. Decide what `knob_a` and `knob_b` mean and add the row to the table in
+   `mod_source.h`. The convention across the existing modes is **`knob_a`
+   is the primary axis — how much, how fast, how spread — and `knob_b` is
+   the character.** Analysis is the one exception, and only because it
+   generates nothing and so has no character to shape.
+7. If the mode has a waveform, reach for `ShapeAt()` before writing your
+   own oscillator. It is the shared six-slot ring (sine, triangle, ramp up,
+   ramp down, pulse, stepped random) with crossfading and wrapping already
+   handled, and the stepped slot works as long as you pass a per-jack held
+   value and redraw it on each phase wrap.
+8. Add a section to `mod_source_test.cpp`. Measure the property the mode
    promises, not the code you just wrote.
 
-The knob itself needs no edit: K6 is `Selector(Mode::kCount)`.
+The knob itself needs no edit: K5 is `Selector(Mode::kCount)`.
 
 ### Add a fifth page
 
@@ -1187,7 +1231,7 @@ Things that will bite quietly if broken:
 22. **A selector knob whose zero position is the safe one needs a boot
     guard.** `Pager`'s default stored value is `0.5`, not `0` — so on any
     boot where `presets.BootLoad()` returns false the knob comes up
-    mid-range. K6 forces itself to Off via `Pager::SetStored`, after
+    mid-range. K5 forces itself to Off via `Pager::SetStored`, after
     settling the ADC so pot-catch re-arms against a real position. (§3.5)
 
 ---
@@ -1268,9 +1312,10 @@ for their respective scopes.
 `mod_source_test.cpp` is the outlier and needs no common header: it drives
 the modulation engine at its real 1 kHz control-tick rate and measures the
 properties each mode actually promises — clock lock across all five ratios,
-phase spread by cross-correlation, non-octave LFO ratios, the divergence
-axis of the smooth random by pairwise correlation, Euclidean maximal
-evenness, and the analysis band split.
+shape-bank continuity across the wrap, non-octave LFO ratios, the
+divergence axis of the smooth random by pairwise correlation, its
+smooth-to-stepped shape axis by largest single-tick move, Euclidean maximal
+evenness, tempo-independent gate duty, and the analysis band split.
 
 It has already earned its keep. The first Narrow ratio set spanned
 1.0–0.44 and quietly contained `0.87 / 0.44 = 1.977` — a 1.1 % octave, in

@@ -26,28 +26,40 @@ currents. Four pages sharing six knobs:
   carries its own emphasis shelf, knee and head-bump resonance. Runs 2×
   oversampled with first-order ADAA, and holds program level across the
   whole drive range — drive trades peaks for harmonics, not for level.
-- **Page 4 — Output (red).** Brickwall limiter (ceiling, release),
-  followed by output trim and TPDF dither depth (0–2 LSB at 24-bit,
-  matching the codec's native word length). K5 and K6 drive the CV
-  modulation source below.
+- **Page 4 — Output (red).** Brickwall limiter (ceiling, release) on K1/K2
+  and output trim on K6. K3, K4 and K5 drive the CV modulation source
+  below. TPDF dither is fixed at 2 LSB and has no control — see
+  `mastering_dsp::kDitherLsb` for why one was never doing audible work.
 
 ## CV modulation source
 
 A stereo-linked chain has one parameter set and nothing worth
-CV-modulating, so the six CV jacks would otherwise sit idle. **K6** on the
+CV-modulating, so the six CV jacks would otherwise sit idle. **K5** on the
 Output page turns them into a six-channel modulation source instead;
-**K5** is the active mode's continuous control, and a **B3** tap cycles its
-discrete secondary. K6's ring morphs between the mode colours as you
-sweep, and K5 and B3 both wear the active mode's colour.
+**K3** and **K4** are the active mode's two continuous controls, and a
+**B3** tap cycles its discrete secondary. K5's ring morphs between the mode
+colours as you sweep, and K3, K4 and B3 all wear the active mode's colour.
 
-| K6 | Mode | Jacks | K5 | B3 |
-|---|---|---|---|---|
-| 0 | **Off** | all released | — | — |
-| 1 | **Analysis** | 6 out | Response, fast peak → slow RMS | Sensitivity −60/−40/−20 dBFS |
-| 2 | **Clocked** | J3 clock in, J4 reset in, 4 out | Phase spread, 0° → 270° | Clock ratio ÷4 ÷2 ×1 ×2 ×4 |
-| 3 | **Multi LFO** | 6 out | Base rate, 0.01–10 Hz | Ratio set: Golden / Prime / Narrow |
-| 4 | **Smooth Random** | 6 out | Divergence, one walk → six | Rate range: glacial / slow / medium |
-| 5 | **Euclid** | J3 clock in, 5 gate out | Density | Rotation 0–3 |
+K3 is the mode's primary axis — how much, how fast, how spread — and K4 is
+its character. Analysis is the one exception: it generates nothing, so it
+has no character to shape and spends K4 on sensitivity instead.
+
+| K5 | Mode | Jacks | K3 | K4 | B3 |
+|---|---|---|---|---|---|
+| 0 | **Off** | all released | — | — | — |
+| 1 | **Analysis** | 6 out | Response, fast peak → slow RMS | Sensitivity, −10 → −70 dBFS | Polarity: normal / inverted |
+| 2 | **Clocked** | J3 clock in, J4 reset in, 4 out | Shape rotation | Shape spread, unison → fanned | Clock ratio ÷4 ÷2 ×1 ×2 ×4 |
+| 3 | **Multi LFO** | 6 out | Base rate, 0.01–10 Hz | Shape | Ratio set: Golden / Prime / Narrow |
+| 4 | **Smooth Random** | 6 out | Divergence, one walk → six | Smooth → stepped | Rate: glacial / slow / medium / quick |
+| 5 | **Euclid** | J3 clock in, 5 gate out | Density | Gate length, trigger → legato | Step set: tight / compact / classic / odd / long |
+
+**The shape bank** is shared by Clocked and Multi LFO: six waveforms in a
+ring — sine, triangle, ramp up, ramp down, pulse, stepped random —
+crossfading between neighbours and wrapping, so the knob has no seam and no
+dead end. Clocked spreads its four outputs across the ring at a settable
+gap; at zero spread they collapse onto one shape and the four jacks carry
+identical voltages, which is the mono-bus case. Multi LFO puts all six at
+one position, since its outputs are already differentiated by rate.
 
 **Analysis** is the one that belongs to this module rather than to any
 utility: the mastering chain becomes its own modulation source. J3–J5 carry
@@ -55,13 +67,17 @@ low/mid/high band envelopes, J6 the broadband level, and J7/J8 the
 compressor's and limiter's gain reduction — so a patch can follow what the
 chain is actually doing to the program material.
 
-**Clocked** puts sine, triangle, ramp-up and stepped random on J5–J8, all
-locked to the incoming clock and reset together. **Multi LFO** runs six
-sines at deliberately non-octave ratios, so they never lock into a common
-downbeat. **Smooth Random**'s divergence knob sweeps from all six jacks
-carrying one shared walk at different depths to six independent wanderers.
-**Euclid** puts five co-prime Euclidean gate patterns (16/12/9/7/5 steps)
-on J4–J8, which take 15120 clocks to come back around.
+**Clocked** puts four shape-bank positions on J5–J8, locked to the incoming
+clock and reset together. With nothing patched to the clock jack it
+free-runs at 1 Hz × the ratio rather than sitting still. **Multi LFO** runs
+six oscillators at deliberately non-octave ratios, so they never lock into a
+common downbeat. **Smooth Random**'s divergence knob sweeps from all six
+jacks carrying one shared walk at different depths to six independent
+wanderers, and its shape knob stiffens the interpolation from liquid drift
+through eased staircase to hard sample-and-hold. **Euclid** puts five
+co-prime Euclidean gate patterns on J4–J8; the step set on B3 chooses the
+grid, from a tight 8/7/6/5/4 that relines every 840 clocks to a long-form
+17/15/13/11/9 that takes 109395.
 
 Bipolar modes swing ±4 V rather than ±5 V: J3–J6 are MCP4728-backed and
 bottom out near −4.4 V, so a wider swing would clip on four of the six

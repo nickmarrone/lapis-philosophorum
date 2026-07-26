@@ -22,8 +22,8 @@ IN ──▶ 3-band EQ ──▶ Compressor ──▶ Tape ──▶ Trim ──
 ```
 
 - **EQ, Compressor, Tape, and Limiter** can each be bypassed.
-- **Trim and Dither** are always in circuit. Set trim to centre and dither
-  to 0 if you want them out of the way.
+- **Trim and Dither** are always in circuit. Set trim to centre if you want
+  it out of the way; dither is fixed and has no control.
 
 Audio I/O is the module's stereo audio in and out, running at 48 kHz
 through the Daisy codec's 24-bit converters. The dither stage is scaled in
@@ -271,30 +271,34 @@ soften, then back off a couple of dB.
 
 ## Page 4 — Output (red)
 
-Brickwall limiting, output level, and dither.
+Brickwall limiting, output level, and the modulation source.
 
 | Knob | Parameter | Range | Curve |
 |---|---|---|---|
 | K1 | Limiter ceiling | −6 dB – −0.1 dB | linear |
 | K2 | Limiter release | 10 ms – 500 ms | exponential |
-| K3 | Trim (limiter drive) | −12 dB – +12 dB | linear, centre = 0 |
-| K4 | Dither | 0 – 2 LSB (24-bit) | linear |
-| K5 | Modulation amount | mode-dependent | linear |
-| K6 | Modulation mode | Off + 5 modes | 6-zone selector |
+| K3 | Modulation A | mode-dependent | linear |
+| K4 | Modulation B | mode-dependent | linear |
+| K5 | Modulation mode | Off + 5 modes | 6-zone selector |
+| K6 | Trim (limiter drive) | −12 dB – +12 dB | linear, centre = 0 |
 
-K1/K2/K4 draw as red level arcs. K3 is bipolar — red to the right, cyan
-to the left, dim white at centre. K5 and K6 belong to the modulation
-source and are documented in their own section below; K6's ring morphs
-between the mode colours and K5 is tinted to match whichever mode is
-active.
+K1/K2 draw as red level arcs. K6 is bipolar — red to the right, cyan to
+the left, dim white at centre. K3, K4 and K5 belong to the modulation
+source and are documented in their own section below; K5's ring morphs
+between the mode colours and K3 and K4 are both tinted to match whichever
+mode is active.
 
-- **B2 tap** — bypass the **limiter**. Trim and dither keep running, and
-  so does the limiter's lookahead delay, so latency does not change and
-  the A/B is time-aligned. Note that with the limiter bypassed nothing
-  caps the output, so a hot trim setting can clip the codec — that is the
-  bypass doing its job, not a fault.
+The three modulation pots are grouped together on purpose: everything
+whose meaning changes with the mode sits in one block, and everything with
+a fixed meaning — ceiling, release, trim — sits outside it.
+
+- **B2 tap** — bypass the **limiter**. Trim keeps running, and so does the
+  limiter's lookahead delay, so latency does not change and the A/B is
+  time-aligned. Note that with the limiter bypassed nothing caps the
+  output, so a hot trim setting can clip the codec — that is the bypass
+  doing its job, not a fault.
 - **B3 tap** — cycles the active **modulation mode's** secondary setting
-  (see the modulation section below). With K6 at Off, B3 does nothing and
+  (see the modulation section below). With K5 at Off, B3 does nothing and
   shows a dim red to say so.
 
 **The limiter** looks 1 ms ahead. It sees a peak coming before you hear it
@@ -319,12 +323,16 @@ take the output past it.
 If you want loudness without more limiting, use makeup gain on the
 compressor page instead.
 
-**Dither** adds TPDF (triangular) noise at the very end, scaled in 24-bit
-LSBs. It decorrelates the quantisation error from the signal, trading a
-tiny amount of noise for the removal of quantisation distortion on quiet
-fades. 0 is off; 1 LSB is the standard choice; 2 is available if you want
-it. It is only worth using if this module is genuinely the last thing
-before your converter or recorder.
+**Dither** is fixed at 2 LSB and has no control. TPDF noise is added at the
+final quantisation point, where it is correct to add it, and the output is
+rounded to the 24-bit grid rather than truncated onto it.
+
+There is nothing to set because there is nothing to hear. A 24-bit LSB is
+−138.5 dBFS, some 40 dB below the analog noise floor at the jacks, and
+whatever converter feeds this module has already put tens of LSBs of its
+own noise on the signal. Dither earns its keep when the end of the chain is
+a stored 24-bit file that may be processed again; the end of this chain is
+an analog voltage going into your rack.
 
 ---
 
@@ -335,12 +343,17 @@ stereo-linked, with one set of controls, and there is nothing on it worth
 patching a CV into. So they are a modulation source for the *rest* of your
 rack instead.
 
-**K6 selects the mode. K5 is that mode's one continuous control. B3 cycles
-its secondary.** K6's ring morphs through the mode colours as you sweep it
-and lights a pip when it snaps; K5 and the B3 button wear the same colour,
-so one glance tells you what is running.
+**K5 selects the mode. K3 and K4 are that mode's two continuous controls.
+B3 cycles its secondary.** K5's ring morphs through the mode colours as you
+sweep it and lights a pip when it snaps; K3, K4 and the B3 button all wear
+the same colour, so one glance tells you what is running.
 
-| K6 | Mode | Colour | Jacks |
+The two knobs divide the same way in every mode: **K3 is the primary axis**
+— how much, how fast, how spread — and **K4 is the character**. Analysis is
+the exception, because it generates nothing and so has no character to
+shape; it uses K4 for sensitivity instead.
+
+| K5 | Mode | Colour | Jacks |
 |---|---|---|---|
 | 1 | Off | dim red | all released |
 | 2 | Analysis | orange | 6 out |
@@ -366,12 +379,20 @@ chain into a six-channel analyser and puts the result on the jacks.
 | J7 | Compressor gain reduction |
 | J8 | Limiter gain reduction |
 
-- **K5 — Response.** Fully left is a fast peak follower (1 ms attack, 50 ms
+- **K3 — Response.** Fully left is a fast peak follower (1 ms attack, 50 ms
   release) that tracks transients: use it for percussive modulation. Fully
   right is a slow RMS-like follower (100 ms / 2 s) that gives a smooth
   programme-level voltage that will not jitter a filter.
-- **B3 — Sensitivity.** Sets what counts as full scale: −60, −40 or −20
-  dBFS. Use −20 on loud material and −60 when the chain is nearly idle.
+- **K4 — Sensitivity.** Sets what counts as full scale, from −10 dBFS fully
+  left to −70 dBFS fully right. Turn it up to make the outputs cover more
+  of their range on quiet material; back it off when the chain is running
+  hot and the jacks are pinned. This is the gain staging, and it is the
+  control you will reach for first.
+- **B3 — Polarity.** Normal, or inverted. Inverted gives full volts at
+  silence falling to zero as the chain fills up, which is the duck-on-loud
+  patch — there is no other way to get it without an external inverter. The
+  gain-reduction outputs invert too, where it reads as headroom remaining
+  rather than reduction applied.
 
 The analysis taps the *finished* output, after the ceiling, so what the
 jacks describe is what actually left the module. Outputs are 0 to +5 V.
@@ -379,19 +400,26 @@ jacks describe is what actually left the module. Outputs are 0 to +5 V.
 ### Clocked — four LFOs locked to your clock
 
 Patch a clock into **J3** and a reset into **J4**. One clock pulse is one
-LFO cycle at ×1.
+LFO cycle at ×1. With nothing patched to the clock jack the mode free-runs
+at 1 Hz × the ratio, so it still does something while you are setting up.
 
-| Jack | Waveform |
-|---|---|
-| J5 | Sine |
-| J6 | Triangle |
-| J7 | Ramp up |
-| J8 | Stepped random |
+The four outputs on J5–J8 all share one phase and differ only in **where
+they sit in the shape bank** — a ring of six waveforms:
 
-- **K5 — Phase spread.** Fully left, all four hit the downbeat together.
-  Fully right they sit a quarter cycle apart — 0°, 90°, 180°, 270° — which
-  turns one gesture into a rotating field. The stepped-random output moves
-  too: the spread shifts *when* in the cycle it picks a new value.
+> sine → triangle → ramp up → ramp down → pulse → stepped random → *(back
+> to sine)*
+
+The bank crossfades between neighbours, so every position between two named
+shapes is a real blend of them, and it wraps, so the knob has no dead end.
+
+- **K3 — Shape rotation.** Slides all four outputs around the ring
+  together. A full sweep of the knob is a full turn of the ring and comes
+  back to where it started.
+- **K4 — Shape spread.** How far apart the four sit. Fully left they
+  collapse onto one shape — and since they share a phase, that makes all
+  four jacks carry the *same voltage*, which is a mono modulation bus.
+  Fully right they are spaced evenly around the whole ring, so you get four
+  quite different waveforms from one clock.
 - **B3 — Clock ratio.** ÷4, ÷2, ×1, ×2, ×4, shared by all four outputs.
 
 A pulse on the reset input snaps every output back to the start of its
@@ -399,11 +427,15 @@ cycle. Outputs are ±4 V.
 
 ### Multi LFO — six free-running LFOs that never line up
 
-Six sines, one per jack, at deliberately non-octave ratios. Octave-related
-LFOs lock into an audible common downbeat, which is the thing this mode
-exists to avoid.
+Six oscillators, one per jack, at deliberately non-octave ratios.
+Octave-related LFOs lock into an audible common downbeat, which is the
+thing this mode exists to avoid.
 
-- **K5 — Base rate.** 0.01 Hz (about 100 seconds a cycle) up to 10 Hz.
+- **K3 — Base rate.** 0.01 Hz (about 100 seconds a cycle) up to 10 Hz.
+- **K4 — Shape.** The same six-waveform ring Clocked uses, but all six
+  outputs share one position on it. They are already told apart by their
+  rates; giving them different shapes as well would only blur the one thing
+  this mode exists to show.
 - **B3 — Ratio set.**
   - **Golden** — powers of the golden ratio. Irrational, so the six never
     come back into phase at all.
@@ -416,30 +448,50 @@ Outputs are ±4 V.
 
 ### Smooth Random — six wandering voltages
 
-Slew-free random walks: the voltage eases between random targets rather
-than stepping, so there is nothing to click through a filter.
+Random walks that ease between targets rather than stepping to them, so
+there is nothing to click through a filter — unless you ask for it.
 
-- **K5 — Divergence.** This is the mode's real axis. Fully left, all six
+- **K3 — Divergence.** This is the mode's real axis. Fully left, all six
   jacks carry the *same* walk at six different depths — the whole patch
   breathes together. Fully right, they are six independent wanderers with
   their rates fanned out over a 4:1 span. Anywhere in between is partial
   correlation.
-- **B3 — Rate range.** Glacial, slow, or medium.
+- **K4 — Shape.** Stiffens the ease. Fully left is the liquid drift
+  described above. Turning it up squeezes each transition into a shorter
+  and shorter window, so the walk becomes a staircase with visibly eased
+  risers, and by fully right it is a classic sample-and-hold. Even at the
+  hard end the risers have finite slope, so nothing downstream gets a
+  discontinuity to click on.
+- **B3 — Rate range.** Glacial, slow, medium, or quick.
 
 Outputs are ±4 V.
 
 ### Euclid — five Euclidean gate patterns
 
 Patch a clock into **J3**. The other five jacks carry Euclidean rhythms
-over co-prime step counts — 16, 12, 9, 7 and 5 — so the combined pattern
-takes 15120 clocks to come back around.
+over co-prime step counts, so the combined pattern takes a long time to
+come back around.
 
-- **K5 — Density.** Sweeps the fill from silent to every step, across all
+- **K3 — Density.** Sweeps the fill from silent to every step, across all
   five patterns at once.
-- **B3 — Rotation.** Shifts every pattern 0–3 steps later.
+- **K4 — Gate length.** From a 2 ms trigger to a gate filling 95 % of the
+  clock period. It is set as a fraction of the measured period, so the same
+  knob position gives the same feel whether you are clocking at 60 BPM or
+  600.
+- **B3 — Step set.** Chooses the rhythmic grid — the one thing about these
+  patterns that density cannot change.
 
-Gates are 0 / +5 V and last half a clock period, so they stay readable
-whether you are clocking at 60 BPM or 600.
+| Set | Steps | Relines every |
+|---|---|---|
+| Tight | 8, 7, 6, 5, 4 | 840 clocks |
+| Compact | 12, 9, 8, 7, 5 | 2520 |
+| Classic | 16, 12, 9, 7, 5 | 5040 |
+| Odd | 13, 11, 9, 7, 5 | 45045 |
+| Long | 17, 15, 13, 11, 9 | 109395 |
+
+Odd has no power of two anywhere in it, so it never lands on a 4/4
+downbeat. Long takes so many clocks to repeat that you hear it evolve
+rather than loop. Gates are 0 / +5 V.
 
 ### Practical notes
 
@@ -447,12 +499,12 @@ whether you are clocking at 60 BPM or 600.
   DAC than J7/J8 and bottom out near −4.4 V; using ±4 V everywhere means a
   mode feels the same whichever jack you patch.
 - **J7 and J8 are the fast pair.** They update every millisecond; J3–J6
-  update at 250 Hz. That is why the ramp and the stepped random sit on J7
-  and J8 in Clocked mode, and why the tightest Euclidean gates do too. If
-  you are driving something timing-critical, prefer J7/J8.
+  update at 250 Hz. That is why the sharpest shapes in Clocked read best on
+  J7 and J8, and why the tightest Euclidean gates do too. If you are driving
+  something timing-critical, prefer J7/J8.
 - **Changing mode restarts the generators** rather than resuming mid-
   gesture, so switching in reads as a deliberate new patch.
-- **K5 and K6 are saved in presets** like any other knob, and each mode
+- **K3, K4 and K5 are saved in presets** like any other knob, and each mode
   remembers its own B3 setting — leave Clocked on ÷2, go to Euclid and
   back, and it is still on ÷2.
 
@@ -507,14 +559,15 @@ a way that changes what a preset contains, old slots are treated as empty
 rather than being restored incorrectly. Losing your presets after a
 firmware update is the safety mechanism working, not a fault.
 
-**This release invalidates existing slots.** The CV modulation source added
-two knobs and six saved settings to what a preset records, so a stored slot
-from the previous firmware would put the wrong values on the wrong knobs.
-You will need to re-save your chains.
+**This release invalidates existing slots.** The Output page was relaid
+out — trim moved from K3 to K6, the mode selector from K6 to K5, and K3/K4
+became the modulation source's two parameter knobs — so a stored slot from
+the previous firmware would put the wrong values on the wrong knobs. You
+will need to re-save your chains.
 
 When a slot cannot be restored — after a firmware update, or on a module
-that has never had a preset saved — **K6 comes up at Off**, so the CV jacks
-are never driven by a mode you did not choose. Sweep K6 through Off to pick
+that has never had a preset saved — **K5 comes up at Off**, so the CV jacks
+are never driven by a mode you did not choose. Sweep K5 through Off to pick
 one up.
 
 ---
@@ -592,7 +645,7 @@ survives reflashes.
 | Tape | Emphasis/de-emphasis pair, tanh knee, 3 machines, ±0.3 asymmetry, head bump, dry/wet mix, DC-blocked |
 | Tape anti-aliasing | 2× oversampled (31-tap half-band) plus first-order ADAA; aliases ≥58 dB down at full drive |
 | Limiter | Brickwall true-peak, 1.25 ms lookahead, exponential release |
-| Dither | TPDF, 0–2 LSB @ 24-bit |
+| Dither | TPDF, fixed 2 LSB @ 24-bit, round-to-nearest quantisation |
 | Latency | 75 samples (1.56 ms) — 60 limiter, 15 tape; constant |
 | CV modulation | 6 jacks, 5 modes + Off; ±4 V bipolar, 0/+5 V envelopes and gates |
 | CV update rate | J7/J8 1 kHz, J3–J6 250 Hz |
