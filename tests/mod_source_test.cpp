@@ -525,7 +525,7 @@ int main()
 
     rep.Section("SmoothRandom — smoothness and range");
     {
-        for (uint8_t s = 0; s < 3; s++)
+        for (uint8_t s = 0; s < 4; s++)
         {
             ModSource m = Make(Mode::SmoothRandom, 1.f, s);
             auto tr = Run(m, 300.f);
@@ -540,13 +540,49 @@ int main()
                       Fmt("range %.0f: stays inside +/-4 V", (double)s),
                       Fmt("peak %.4f V", worst_range));
             /* A smoothstep segment's peak slope is 1.5 * span / segment time.
-             * Even the fastest range (0.25 Hz * 4 fan = 1 Hz) cannot move more
-             * than ~0.05 V in a 1 ms tick; a stepped generator would show a
-             * full 8 V jump. */
+             * The fastest range is 1.5 Hz * 4 fan = 6 Hz, so a 1 ms tick moves
+             * at most ~0.07 V; a stepped generator would show a full 8 V jump.
+             * This is at shape 0 — the whole point of the shape knob is to
+             * break this property on purpose, and it is checked separately. */
             rep.Check(worst_step < 0.1,
                       Fmt("range %.0f: no discontinuities", (double)s),
                       Fmt("largest single-tick move %.5f V", worst_step));
         }
+    }
+
+    rep.Section("SmoothRandom — shape");
+    {
+        /* Shape stiffens the ease. Smooth stays gentle; stepped must show
+         * genuinely large single-tick moves, because that is the staircase. */
+        ModSource smooth  = Make(Mode::SmoothRandom, 1.f, 2, 12345u, 0.f);
+        ModSource stepped = Make(Mode::SmoothRandom, 1.f, 2, 12345u, 1.f);
+        auto tr_s = Run(smooth,  300.f);
+        auto tr_p = Run(stepped, 300.f);
+
+        double step_smooth = 0.0, step_stepped = 0.0;
+        for (uint8_t j = 0; j < kNumJacks; j++)
+        {
+            if (MaxStep(tr_s[j]) > step_smooth)  step_smooth  = MaxStep(tr_s[j]);
+            if (MaxStep(tr_p[j]) > step_stepped) step_stepped = MaxStep(tr_p[j]);
+        }
+        rep.Check(step_stepped > step_smooth * 20.0,
+                  "shape 1 is a staircase, shape 0 is not",
+                  Fmt("largest tick move %.4f V smooth vs ", step_smooth)
+                      + Fmt("%.4f V stepped", step_stepped));
+
+        /* Even at full stiffness it is a short ease rather than a jump, so
+         * nothing downstream gets a discontinuity to click on. */
+        rep.Check(step_stepped < kBipolarVolts * 2.0,
+                  "the staircase still has finite-slope risers",
+                  Fmt("%.4f V in one tick against an 8 V span",
+                      step_stepped));
+
+        /* And both ends stay in range. */
+        double worst = 0.0;
+        for (uint8_t j = 0; j < kNumJacks; j++)
+            if (MaxAbs(tr_p[j]) > worst) worst = MaxAbs(tr_p[j]);
+        rep.Check(worst <= kBipolarVolts + 1e-4,
+                  "stepped stays inside +/-4 V", Fmt("peak %.4f V", worst));
     }
 
     /* ── Euclid ──────────────────────────────────────────────────────── */
@@ -747,7 +783,7 @@ int main()
         rep.Check(SecondaryZones(Mode::Analysis) == 2, "Analysis has 2", "");
         rep.Check(SecondaryZones(Mode::Clocked) == 5, "Clocked has 5", "");
         rep.Check(SecondaryZones(Mode::MultiLfo) == 3, "MultiLfo has 3", "");
-        rep.Check(SecondaryZones(Mode::SmoothRandom) == 3, "SmoothRandom has 3", "");
+        rep.Check(SecondaryZones(Mode::SmoothRandom) == 4, "SmoothRandom has 4", "");
         rep.Check(SecondaryZones(Mode::Euclid) == 4, "Euclid has 4", "");
 
         /* An out-of-range secondary must be clamped, not indexed with. */

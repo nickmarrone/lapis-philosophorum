@@ -46,7 +46,10 @@ constexpr float kClockHzMin = 0.02f, kClockHzMax = 100.f;
 
 /* ── Mode::SmoothRandom ──────────────────────────────────────────────── */
 
-constexpr float kRandomBaseHz[3] = {0.008f, 0.05f, 0.25f};  // glacial/slow/medium
+/* glacial / slow / medium / quick. The table used to stop at 0.25 Hz — a four
+ * second segment — so the mode had no fast setting at all and could not do
+ * anything nervous or percussive whatever the knobs were doing. */
+constexpr float kRandomBaseHz[4] = {0.008f, 0.05f, 0.25f, 1.5f};
 
 /* Depth taper applied to the shared walk at divergence 0, so the six jacks
  * read as one gesture seen at six scales rather than six identical copies. */
@@ -109,6 +112,15 @@ inline float Lerp(float a, float b, float t) { return a + t * (b - a); }
  * a segment boundary — that kink is exactly what makes a naive interpolated
  * random sound like a stepped one through a filter. */
 inline float SmoothStep(float t) { return t * t * (3.f - 2.f * t); }
+
+/* The same ease, compressed into a window at the head of the segment. A window
+ * of 1 is SmoothStep unchanged; shrinking it toward 0 turns the interpolation
+ * into a hold, so one control spans liquid drift through eased staircase to
+ * hard sample-and-hold without ever introducing a discontinuity. */
+inline float EasedStep(float t, float window)
+{
+    return SmoothStep(Clamp01(t / window));
+}
 
 /* Peaks at phase 0 so every waveform in Mode::Clocked lines up on the
  * downbeat when spread is 0. */
@@ -178,7 +190,7 @@ uint8_t SecondaryZones(Mode m)
         case Mode::Analysis:     return 2;   // polarity: normal / inverted
         case Mode::Clocked:      return 5;   // clock ratio
         case Mode::MultiLfo:     return 3;   // ratio set
-        case Mode::SmoothRandom: return 3;   // rate range
+        case Mode::SmoothRandom: return 4;   // rate range
         case Mode::Euclid:       return 4;   // rotation
         default:                 return 1;   // Off — the tap is a no-op
     }
@@ -467,7 +479,13 @@ void ModSource::TickMultiLfo(Frame& out)
 void ModSource::TickSmoothRandom(Frame& out)
 {
     const float d    = params_.knob_a;                       // divergence
-    const float base = kRandomBaseHz[params_.secondary % 3];
+    const float base = kRandomBaseHz[params_.secondary % 4];
+
+    /* K4 stiffens the ease. The minimum window is 2 % of a segment, short
+     * enough to read as a hard step at every rate the mode offers while
+     * staying continuous — a literal jump would put a click on any audio path
+     * this drives. */
+    const float win = Lerp(1.f, 0.02f, params_.knob_b);
 
     /* The shared walk always runs; at divergence 0 it is the only thing on
      * the jacks, at divergence 1 it is fully crossfaded out. */
@@ -479,7 +497,7 @@ void ModSource::TickSmoothRandom(Frame& out)
         common_target_ = rng_.Bipolar();
     }
     const float common = Lerp(common_prev_, common_target_,
-                              SmoothStep(common_phase_));
+                              EasedStep(common_phase_, win));
 
     for (uint8_t i = 0; i < kNumJacks; i++)
     {
@@ -496,7 +514,7 @@ void ModSource::TickSmoothRandom(Frame& out)
             rand_target_[i] = rng_.Bipolar();
         }
         const float indep = Lerp(rand_prev_[i], rand_target_[i],
-                                 SmoothStep(rand_phase_[i]));
+                                 EasedStep(rand_phase_[i], win));
 
         const float v = Lerp(common * kCommonDepth[i], indep, d);
         out.volts[i]  = kBipolarVolts * Clamp(v, -1.f, 1.f);
