@@ -268,71 +268,124 @@ int main()
                   Fmt("%.3f V one tick after reset", (double)tr[2][at]));
     }
 
-    rep.Section("Clocked — phase spread");
+    rep.Section("Clocked — shape spread");
     {
-        /* At spread 0 every output starts at its phase-0 value; at spread 1
-         * they sit a quarter cycle apart. Measure the sine against the
-         * triangle, which share a waveform peak at phase 0. */
-        ModSource lo = Make(Mode::Clocked, 0.f, 2);
+        /* Spread 0 collapses all four outputs onto one position in the bank.
+         * They share a phase, so that makes them bit-identical — the mono-bus
+         * case, and the property that says spread really does close all the
+         * way rather than merely narrowing. */
+        ModSource lo = Make(Mode::Clocked, 0.3f, 2, 12345u, /*knob_b=*/0.f);
         auto tr_lo = RunClocked(lo, 20.f, 0.5f);
-        const int period_ticks = 500;
-        const int lag0 = BestLag(std::vector<float>(tr_lo[2].begin() + 5000,
-                                                    tr_lo[2].end()),
-                                 std::vector<float>(tr_lo[3].begin() + 5000,
-                                                    tr_lo[3].end()),
-                                 period_ticks);
-        rep.Check(lag0 < 15 || lag0 > period_ticks - 15,
-                  "spread 0: sine and triangle are aligned",
-                  Fmt("%.0f ticks of lag", (double)lag0));
 
-        ModSource hi = Make(Mode::Clocked, 1.f, 2);
+        double worst_diff = 0.0;
+        for (uint8_t j = 3; j < 6; j++)
+            for (size_t i = 0; i < tr_lo[2].size(); i++)
+            {
+                const double d = std::fabs(tr_lo[j][i] - tr_lo[2][i]);
+                if (d > worst_diff) worst_diff = d;
+            }
+        rep.Check(worst_diff < 1e-6,
+                  "spread 0: the four outputs are identical",
+                  Fmt("worst divergence %.2e V", worst_diff));
+
+        /* At full spread they sit 1.5 slots apart — six slots over four
+         * outputs — so no two carry the same waveform any more. */
+        ModSource hi = Make(Mode::Clocked, 0.3f, 2, 12345u, /*knob_b=*/1.f);
         auto tr_hi = RunClocked(hi, 20.f, 0.5f);
-        const int lag1 = BestLag(std::vector<float>(tr_hi[2].begin() + 5000,
-                                                    tr_hi[2].end()),
-                                 std::vector<float>(tr_hi[3].begin() + 5000,
-                                                    tr_hi[3].end()),
-                                 period_ticks);
-        /* A quarter of 500 ticks is 125; allow generous slack because the two
-         * waveforms are not the same shape. */
-        rep.Check(std::abs(lag1 - 375) < 60 || std::abs(lag1 - 125) < 60,
-                  "spread 1: triangle sits a quarter cycle away",
-                  Fmt("%.0f ticks of lag (quarter cycle = 125)", (double)lag1));
+
+        double closest = 1e9;
+        for (uint8_t a = 2; a < 6; a++)
+            for (uint8_t b = (uint8_t)(a + 1); b < 6; b++)
+            {
+                double sum = 0.0;
+                for (size_t i = 0; i < tr_hi[a].size(); i++)
+                    sum += std::fabs(tr_hi[a][i] - tr_hi[b][i]);
+                const double mean = sum / (double)tr_hi[a].size();
+                if (mean < closest) closest = mean;
+            }
+        rep.Check(closest > 0.25,
+                  "spread 1: no two outputs carry the same waveform",
+                  Fmt("closest pair differs by %.3f V on average", closest));
     }
 
-    rep.Section("Clocked — stepped random follows spread");
+    rep.Section("Clocked — shape rotation");
     {
-        /* The stepped out must re-sample at its own offset phase, i.e. K5 has
-         * to move it too. Compare when the steps land at spread 0 vs 1. */
-        auto edge_times = [](const std::vector<float>& x) {
-            std::vector<int> e;
-            for (size_t i = 1; i < x.size(); i++)
-                if (std::fabs(x[i] - x[i - 1]) > 0.01f) e.push_back((int)i);
-            return e;
-        };
+        /* Rotation is a ring: a full sweep of the knob returns to where it
+         * started, so the knob has no seam. Compare rotation 0 against
+         * rotation 1 with spread closed, which is the cleanest read. */
+        ModSource a = Make(Mode::Clocked, 0.f, 2, 12345u, 0.f);
+        ModSource b = Make(Mode::Clocked, 1.f, 2, 12345u, 0.f);
+        auto tr_a = RunClocked(a, 10.f, 0.5f);
+        auto tr_b = RunClocked(b, 10.f, 0.5f);
 
-        ModSource lo = Make(Mode::Clocked, 0.f, 2);
-        auto tr_lo = RunClocked(lo, 20.f, 0.5f);
-        ModSource hi = Make(Mode::Clocked, 1.f, 2);
-        auto tr_hi = RunClocked(hi, 20.f, 0.5f);
-
-        auto e_lo = edge_times(tr_lo[5]);
-        auto e_hi = edge_times(tr_hi[5]);
-        rep.Check(!e_lo.empty() && !e_hi.empty(),
-                  "stepped output actually steps",
-                  Fmt("%.0f and %.0f edges", (double)e_lo.size(),
-                      (double)e_hi.size()));
-
-        if (!e_lo.empty() && !e_hi.empty())
+        double worst = 0.0;
+        for (size_t i = 0; i < tr_a[2].size(); i++)
         {
-            /* Steps happen once per cycle in both cases, but at a different
-             * point in the cycle. */
-            const int off_lo = e_lo[e_lo.size() / 2] % 500;
-            const int off_hi = e_hi[e_hi.size() / 2] % 500;
-            rep.Check(std::abs(off_lo - off_hi) > 50,
-                      "spread moves where the step lands",
-                      Fmt("step at tick %.0f vs %.0f within the cycle",
-                          (double)off_lo, (double)off_hi));
+            const double d = std::fabs(tr_a[2][i] - tr_b[2][i]);
+            if (d > worst) worst = d;
         }
+        rep.Check(worst < 1e-6, "rotation wraps: 0 and 1 are the same shape",
+                  Fmt("worst difference %.2e V", worst));
+
+        /* And the sweep between them is a real traversal, not a plateau:
+         * a mid rotation must differ from both ends. */
+        ModSource mid = Make(Mode::Clocked, 0.5f, 2, 12345u, 0.f);
+        auto tr_m = RunClocked(mid, 10.f, 0.5f);
+        double sum = 0.0;
+        for (size_t i = 0; i < tr_a[2].size(); i++)
+            sum += std::fabs(tr_m[2][i] - tr_a[2][i]);
+        rep.Check(sum / (double)tr_a[2].size() > 0.25,
+                  "mid rotation is a different waveform from the ends",
+                  Fmt("mean difference %.3f V",
+                      sum / (double)tr_a[2].size()));
+    }
+
+    rep.Section("Clocked — free-runs without a clock");
+    {
+        /* Selecting the mode with nothing patched must still produce motion.
+         * This froze every output at DC before, which read as a dead module. */
+        ModSource m = Make(Mode::Clocked, 0.f, 2, 12345u, 1.f);
+        auto tr = Run(m, 10.f);          // Run() never calls OnClock
+        bool moves = true;
+        for (uint8_t j = 2; j < 6; j++)
+            if (MaxAbs(tr[j]) < 0.1) moves = false;
+        rep.Check(moves, "all four outputs move with no clock patched",
+                  Fmt("weakest output peaks at %.3f V",
+                      MaxAbs(tr[2]) < MaxAbs(tr[3]) ? MaxAbs(tr[2])
+                                                    : MaxAbs(tr[3])));
+    }
+
+    rep.Section("Shape bank");
+    {
+        /* The bank is a ring with no discontinuity: stepping a fixed phase
+         * through every position in small increments must never jump. The
+         * held value is fixed here so the stepped slot is a constant and any
+         * jump found is the crossfade's own. */
+        double worst_jump = 0.0;
+        for (float phase : {0.05f, 0.31f, 0.62f, 0.88f})
+        {
+            float prev = ShapeAt(0.f, phase, 0.4f);
+            for (int i = 1; i <= 1200; i++)
+            {
+                const float pos = (float)i * (float)kNumShapes / 1200.f;
+                const float v   = ShapeAt(pos, phase, 0.4f);
+                const double d  = std::fabs(v - prev);
+                if (d > worst_jump) worst_jump = d;
+                prev = v;
+            }
+        }
+        rep.Check(worst_jump < 0.02,
+                  "sweeping the bank is continuous, including the wrap",
+                  Fmt("largest single-step jump %.4f", worst_jump));
+
+        bool in_range = true;
+        for (int i = 0; i < 600; i++)
+            for (int p = 0; p < 40; p++)
+            {
+                const float v = ShapeAt((float)i * 0.01f, (float)p / 40.f, 0.9f);
+                if (v < -1.0001f || v > 1.0001f) in_range = false;
+            }
+        rep.Check(in_range, "every position in the bank stays inside -1..+1", "");
     }
 
     rep.Section("Clocked — output range");
@@ -381,6 +434,32 @@ int main()
                       std::string("six periods match the ") + set_names[s] + " set",
                       Fmt("worst error %.3f %%", worst * 100.0));
         }
+    }
+
+    rep.Section("MultiLfo — shape");
+    {
+        /* All six share one position in the bank, so the shape knob must move
+         * every output and must move them the same way. Guards the plumbing:
+         * the ratio tests above all run at the default sine position and
+         * would pass even if knob_b were never read. */
+        ModSource sine = Make(Mode::MultiLfo, 0.5f, 0, 12345u, /*knob_b=*/0.f);
+        ModSource ramp = Make(Mode::MultiLfo, 0.5f, 0, 12345u, /*knob_b=*/2.f / 6.f);
+        auto tr_s = Run(sine, 60.f);
+        auto tr_r = Run(ramp, 60.f);
+
+        bool   all_moved = true;
+        double weakest   = 1e9;
+        for (uint8_t j = 0; j < kNumJacks; j++)
+        {
+            double sum = 0.0;
+            for (size_t i = 0; i < tr_s[j].size(); i++)
+                sum += std::fabs(tr_s[j][i] - tr_r[j][i]);
+            const double mean = sum / (double)tr_s[j].size();
+            if (mean < weakest) weakest = mean;
+            if (mean < 0.2) all_moved = false;
+        }
+        rep.Check(all_moved, "the shape knob moves all six outputs",
+                  Fmt("weakest channel changed by %.3f V on average", weakest));
     }
 
     rep.Section("MultiLfo — no octave pairs");

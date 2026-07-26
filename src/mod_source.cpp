@@ -118,6 +118,25 @@ inline float TriangleAt(float phase)
  * the downbeat marker for a saw. */
 inline float RampAt(float phase) { return 2.f * phase - 1.f; }
 
+inline float RampDownAt(float phase) { return 1.f - 2.f * phase; }
+
+inline float PulseAt(float phase) { return phase < 0.5f ? 1.f : -1.f; }
+
+/* One slot of the shape bank. `held` is the caller's per-jack sample-and-hold
+ * value, used by the stepped slot; every other slot ignores it. */
+inline float ShapeSlot(uint8_t slot, float phase, float held)
+{
+    switch (slot)
+    {
+        case 0:  return SineAt(phase);
+        case 1:  return TriangleAt(phase);
+        case 2:  return RampAt(phase);
+        case 3:  return RampDownAt(phase);
+        case 4:  return PulseAt(phase);
+        default: return held;                       // 5 — stepped random
+    }
+}
+
 /* Linear amplitude -> 0..1 against a dB floor. */
 inline float EnvToNorm(float lin, float floor_db)
 {
@@ -129,6 +148,22 @@ inline float EnvToNorm(float lin, float floor_db)
 } // namespace
 
 /* ── Free functions ──────────────────────────────────────────────────── */
+
+float ShapeAt(float pos, float phase, float held)
+{
+    /* Wrap into [0, kNumShapes) via the unit interval, so the bank is a ring:
+     * sweeping past the stepped slot arrives back at the sine rather than
+     * dead-ending, and the knob has no discontinuity anywhere in its travel. */
+    pos = Wrap01(pos * (1.f / static_cast<float>(kNumShapes)))
+          * static_cast<float>(kNumShapes);
+
+    uint8_t i = static_cast<uint8_t>(pos);
+    if (i >= kNumShapes) i = 0;                 // float edge at the wrap point
+    const float f = pos - static_cast<float>(i);
+
+    const uint8_t next = static_cast<uint8_t>((i + 1u) % kNumShapes);
+    return Lerp(ShapeSlot(i, phase, held), ShapeSlot(next, phase, held), f);
+}
 
 uint8_t SecondaryZones(Mode m)
 {
@@ -221,7 +256,7 @@ void ModSource::Init(float tick_hz, uint32_t seed)
     common_prev_   = rng_.Bipolar();
     common_target_ = rng_.Bipolar();
     common_phase_  = 0.f;
-    stepped_       = rng_.Bipolar();
+    for (uint8_t i = 0; i < kNumJacks; i++) stepped_[i] = rng_.Bipolar();
 }
 
 void ModSource::SetParams(const Params& p)
@@ -292,8 +327,8 @@ void ModSource::ApplyReset()
     {
         phase_[i]      = 0.f;
         prev_phase_[i] = 0.f;
+        stepped_[i]    = rng_.Bipolar();
     }
-    stepped_ = rng_.Bipolar();
 }
 
 /* ── Response / sensitivity ──────────────────────────────────────────── */
@@ -355,32 +390,39 @@ void ModSource::TickAnalysis(Frame& out)
 void ModSource::TickClocked(Frame& out)
 {
     const float ratio = kClockRatio[params_.secondary % 5];
-    const float hz    = have_clk_ ? clk_hz_ * ratio : 0.f;
+
+    /* Free-runs at clk_hz_'s 1 Hz default until a clock actually arrives.
+     * Gating on have_clk_ instead froze every output at DC, so selecting this
+     * mode with nothing patched looked like a dead module — the only one of
+     * the five that did not move on its own. */
+    const float hz = clk_hz_ * ratio;
 
     prev_phase_[0] = phase_[0];
     phase_[0]      = Wrap01(phase_[0] + hz * dt_);
+    const bool wrapped = phase_[0] < prev_phase_[0];
 
-    /* Spread fans the four outputs to 0 / 90 / 180 / 270 degrees at full
-     * travel. The stepped-random out is included by offsetting the phase it
-     * re-samples on, so it moves with the others rather than ignoring K5. */
-    const float spread = params_.knob_a * 0.25f;
+    /* All four outputs share the one phase and differ only in where they sit
+     * in the shape bank: rotation slides the whole set around the ring,
+     * spread opens the gap between adjacent members. Full spread is 1.5 slots
+     * apart, which is 6/4 — the four spaced evenly around the six-slot ring.
+     * At spread 0 they collapse onto one shape and the four jacks carry
+     * identical voltages, which is the mono-bus case and is deliberate. */
+    const float rot = params_.knob_a * static_cast<float>(kNumShapes);
+    const float gap = params_.knob_b * (static_cast<float>(kNumShapes) / 4.f);
 
     /* Jacks 0 and 1 are clock and reset in; the four outputs are 2..5. */
-    const float p_sine = Wrap01(phase_[0] + 0.f * spread);
-    const float p_tri  = Wrap01(phase_[0] + 1.f * spread);
-    const float p_ramp = Wrap01(phase_[0] + 2.f * spread);
-    const float p_step = Wrap01(phase_[0] + 3.f * spread);
+    for (uint8_t k = 0; k < 4; k++)
+    {
+        const uint8_t j = static_cast<uint8_t>(k + 2);
 
-    out.volts[2] = kBipolarVolts * SineAt(p_sine);
-    out.volts[3] = kBipolarVolts * TriangleAt(p_tri);
-    out.volts[4] = kBipolarVolts * RampAt(p_ramp);
+        /* Each jack holds its own S&H value, drawn independently on the
+         * shared downbeat, so the stepped slot stays live wherever it lands
+         * in the blend instead of being one output's private waveform. */
+        if (wrapped) stepped_[j] = rng_.Bipolar();
 
-    /* Re-sample the stepped output when its own offset phase wraps. Compare
-     * against the previous offset phase so the detection moves with spread. */
-    const float prev_step = Wrap01(prev_phase_[0] + 3.f * spread);
-    if (hz > 0.f && p_step < prev_step)
-        stepped_ = rng_.Bipolar();
-    out.volts[5] = kBipolarVolts * stepped_;
+        out.volts[j] = kBipolarVolts *
+            ShapeAt(rot + static_cast<float>(k) * gap, phase_[0], stepped_[j]);
+    }
 }
 
 void ModSource::TickMultiLfo(Frame& out)
@@ -391,10 +433,18 @@ void ModSource::TickMultiLfo(Frame& out)
     const float* ratios = Ratios(
         static_cast<RatioSet>(params_.secondary % 3));
 
+    /* One shared position in the bank, no spread: these six are already
+     * differentiated by rate, and giving them different shapes as well would
+     * only blur the one thing the mode exists to show. */
+    const float shape = params_.knob_b * static_cast<float>(kNumShapes);
+
     for (uint8_t i = 0; i < kNumJacks; i++)
     {
-        phase_[i]    = Wrap01(phase_[i] + base * ratios[i] * dt_);
-        out.volts[i] = kBipolarVolts * SineAt(phase_[i]);
+        const float prev = phase_[i];
+        phase_[i] = Wrap01(phase_[i] + base * ratios[i] * dt_);
+        if (phase_[i] < prev) stepped_[i] = rng_.Bipolar();
+
+        out.volts[i] = kBipolarVolts * ShapeAt(shape, phase_[i], stepped_[i]);
     }
 }
 

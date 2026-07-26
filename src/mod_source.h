@@ -183,7 +183,11 @@ class ModSource {
     uint32_t last_clk_us_   = 0;
     bool     have_clk_      = false;
     bool     reset_pending_ = false;
-    float    stepped_       = 0.f;    // held value of the stepped-random out
+
+    /* Per-jack sample-and-hold for the bank's stepped slot. One value per jack
+     * rather than one shared: the slot can now appear on any output, and two
+     * jacks blending into it must not read the same number. */
+    float    stepped_[kNumJacks] = {};
 
     /* ── SmoothRandom ──
      * Each channel interpolates prev -> target with a smoothstep across its
@@ -213,6 +217,26 @@ class ModSource {
  * allocation. What the harness pins is the property that actually matters:
  * maximal evenness, i.e. no two gaps between pulses differ by more than 1. */
 uint32_t EuclidPattern(uint8_t steps, uint8_t pulses, uint8_t rotation);
+
+/* ── The shape bank (exposed for the test harness) ────────────────────────
+ * Six waveforms arranged in a ring — sine, triangle, ramp up, ramp down,
+ * pulse, stepped random — addressed by a continuous position that crossfades
+ * between neighbours and wraps, so a knob sweeping the bank has no
+ * discontinuity and no dead end.
+ *
+ * Clocked and MultiLfo both draw from it. Clocked spreads its four outputs
+ * across it at a settable gap; MultiLfo puts all six at one position, since
+ * its outputs are already differentiated by rate.
+ *
+ * @param pos    position in the bank; any real number, wrapped into [0, 6).
+ * @param phase  oscillator phase in turns, 0..1.
+ * @param held   the caller's per-jack sample-and-hold value for the stepped
+ *               slot, redrawn on each phase wrap. Ignored by every other slot.
+ * @return       -1..+1.
+ */
+constexpr uint8_t kNumShapes = 6;
+
+float ShapeAt(float pos, float phase, float held);
 
 /* ── Ratio sets for MultiLfo (exposed for the test harness) ─────────────── */
 enum class RatioSet : uint8_t { Golden = 0, Prime, Narrow, kCount };
