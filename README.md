@@ -139,17 +139,18 @@ builds with the standard Daisy `make` workflow.
 - `make`
 - `arm-none-eabi-gcc`
 - `dfu-util`
+- `node` — only for `make program-live`
 
 Ubuntu / Debian:
 
 ```sh
-sudo apt install git make gcc-arm-none-eabi dfu-util
+sudo apt install git make gcc-arm-none-eabi dfu-util nodejs
 ```
 
 macOS (Homebrew):
 
 ```sh
-brew install git make dfu-util
+brew install git make dfu-util node
 brew install --cask gcc-arm-embedded
 ```
 
@@ -176,10 +177,22 @@ Switching boards wipes the object tree automatically.
 
 ## Flashing
 
-The Alchemy Lab runs a custom bootloader (`DaisyBootloader-AlchemyLabV2`)
-that serves DFU over the front-panel USB-C port.  Connect that port, then put
-the module in update mode: during the ~2 s window after power-on — the LED
-rings spin a warm-white comet — press or hold **B3.**  The rings switch to a slow breathe, and the module stays in DFU mode until it's flashed or reset.  Then:
+Connect the front-panel USB-C port and run:
+
+```sh
+make program-live
+```
+
+The firmware serves HostLink on that port, so this asks the running module to
+reboot itself into its bootloader and then flashes it — no power cycle, no
+button press, rack untouched.  It needs `node` on your `PATH` for the SDK's
+`hostlink-cli`.
+
+If the module isn't running HostLink firmware — a fresh board, or one you've
+already bricked mid-experiment — put it into update mode by hand instead:
+during the ~2 s window after power-on, while the LED rings spin a warm-white
+comet, press or hold **B3.**  The rings switch to a slow breathe and the module
+stays in DFU mode until it's flashed or reset.  Then:
 
 ```sh
 make program-dfu

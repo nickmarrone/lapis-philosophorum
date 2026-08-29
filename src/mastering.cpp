@@ -27,11 +27,15 @@
  *   state and secondary mode
  * - Save and recall presets with flash wear leveling
  * - Settings menu for managing basics
+ * - HostLink over the panel USB-C: presets and settings are manageable from
+ *   the browser, and `make program-live` reboots the module into DFU over
+ *   that same connection instead of a power cycle
  */
 
 #include "daisy_seed.h"
 #include "alchemy/hw/alchemy_lab.h"
 #include "alchemy/control/cv_edge.h"
+#include "alchemy/host_link/host.h"
 #include "alchemy/surface/control_loop.h"
 #include "alchemy/surface/page.h"
 #include "alchemy/surface/pager.h"
@@ -234,6 +238,18 @@ static ControlLoop loop    (hw);
 static Pager       pager   (hw.buttons[0], 4, kNumPots);
 static Presets     presets (hw.seed.qspi);
 static Settings    settings(hw, &pager);
+
+/* HostLink on the panel USB-C. The web programmer's layout is derived from
+ * the same objects Presets walks — the knob and page declarations above — so
+ * it cannot drift from the firmware, and there is nothing to declare here
+ * beyond identity. `.Product` makes the module enumerate under the platform
+ * name like every other Hermetic module rather than under its own.
+ *
+ * It also carries the reboot command, which is what lets `make program-live`
+ * drop the module into DFU without reaching for the power switch. */
+static hostlink::Host host(presets, "lapis_philosophorum",
+                           "Lapis Philosophorum",
+                           LAPIS_VERSION_STR, LAPIS_GIT_HASH);
 
 /* ── Persistence: per-page mode/bypass state not carried by any knob ─────
  * Seven single-byte fields; Deserialize clamps so a corrupt/foreign slot can
@@ -727,6 +743,7 @@ int main()
         .Use(comp_page)
         .Use(sat_page)
         .Use(out_page)
+        .Use(host)
         .OnFrame(UpdateParams)
         .OnPoll(PollControls)
         .OnRender(RenderButtons);

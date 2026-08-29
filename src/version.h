@@ -22,6 +22,13 @@
 #define LAPIS_VERSION_PATCH 0
 #define LAPIS_VERSION_STR   "0.5.0"
 
+/* Short commit the image was built from, stamped in by the Makefile and
+ * reported over HostLink. Defined here only so a build outside the Makefile
+ * (an IDE indexer, a one-off compile) still compiles. */
+#ifndef LAPIS_GIT_HASH
+#define LAPIS_GIT_HASH "unknown"
+#endif
+
 namespace lapis
 {
 /** Version packed as 0xMMmmpp, so releases compare with `<` and `>`. */

@@ -5,7 +5,9 @@
 # Standard Daisy workflow (libDaisy core Makefile underneath):
 #   make libdaisy       — build lib/libDaisy once after cloning
 #   make                — build firmware (BOARD=v2 by default)
-#   make program-dfu    — flash over USB (module in DFU mode first; see README)
+#   make program-live   — reboot the running module into DFU over USB, then
+#                         flash it; no power cycle, no button press
+#   make program-dfu    — flash a module already in DFU mode (see README)
 #   make clean          — remove the build tree
 # =============================================================================
 
@@ -51,6 +53,14 @@ ifeq ($(BOARD),v2)
 C_DEFS += -DALCHEMY_BOARD_V2
 endif
 
+# Stamped into the image and reported over HostLink, so a module in the web
+# programmer says which commit it is running. Falls back to the definition in
+# version.h when git isn't available (tarball build, no .git).
+GIT_HASH := $(shell git rev-parse --short HEAD 2>/dev/null)
+ifneq ($(GIT_HASH),)
+C_DEFS += -DLAPIS_GIT_HASH=\"$(GIT_HASH)\"
+endif
+
 # ── Daisy bootloader build (BOOT_SRAM) ──────────────────────────────────────
 APP_TYPE = BOOT_SRAM
 LDSCRIPT = $(ALCHEMY_DIR)/cmake/linkers/alchemy_stm32h750ib_sram.lds
@@ -70,6 +80,26 @@ endif
 .PHONY: libdaisy
 libdaisy:
 	$(MAKE) -C $(LIBDAISY_DIR)
+
+# ── Flash a running module without touching it ──────────────────────────────
+# The stock program-dfu needs the module already in DFU mode, which means a
+# power cycle plus holding B3 through the bootloader window. The firmware runs
+# a HostLink host on the panel USB-C, so instead we ask it to reboot into the
+# bootloader over that same cable and hand off to dfu-util.
+#
+# dfu-util needs -w here: the reboot request returns as soon as the module
+# ACKs, well before it has re-enumerated as a DFU device, so without -w the
+# flash races the re-enumeration and fails "No DFU capable USB device".
+#
+# Requires node on PATH. If the module is not running HostLink firmware (or is
+# already sitting in DFU mode), the reboot step has nothing to talk to — use
+# program-dfu for that case.
+HOSTLINK_CLI = $(ALCHEMY_DIR)/tools/hostlink-cli/hostlink.mjs
+
+.PHONY: program-live
+program-live: all
+	node $(HOSTLINK_CLI) reboot bootloader
+	dfu-util -w -a 0 -s $(FLASH_ADDRESS):leave -D $(BUILD_DIR)/$(TARGET_BIN) -d ,0483:$(USBPID)
 
 # ── Host-side DSP measurement harness (no cross-toolchain needed) ───────────
 .PHONY: test test-golden test-clean
