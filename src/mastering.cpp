@@ -37,12 +37,14 @@
 #include "alchemy/control/cv_edge.h"
 #include "alchemy/host_link/host.h"
 #include "alchemy/surface/control_loop.h"
+#include "alchemy/surface/jack.h"
 #include "alchemy/surface/page.h"
 #include "alchemy/surface/pager.h"
 #include "alchemy/surface/presets.h"
 #include "alchemy/surface/settings.h"
 #include "alchemy/surface/virtual_knob.h"
 
+#include "manual.h"
 #include "mastering_dsp.h"
 #include "mastering_palette.h"
 #include "mod_source.h"
@@ -62,31 +64,49 @@ static const char kVersionBanner[] = "LapisPhilosophorum " LAPIS_VERSION_STR;
  * K1/K3/K5 are Level rings (freq); K2/K4/K6 are Bipolar rings (gain). */
 
 static VirtualKnob ls_freq = VirtualKnob(0, "LS Freq")
-    .Exp(20.f, 800.f)
+    .Exp(20.f, 800.f).Unit("Hz").Ident("eq.ls.freq")
+    .Help("Corner of the low shelf. Everything below it is lifted or cut "
+          "together, so this is the control for weight rather than for one "
+          "note — put it under the material you want to move.")
     .Ring(Level(kEqPalette.arc));
 
 static VirtualKnob ls_gain = VirtualKnob(1, "LS Gain")
-    .Linear(-15.f, 15.f)
+    .Linear(-15.f, 15.f).Unit("dB").Ident("eq.ls.gain")
+    .Help("How much the low shelf lifts or cuts. Small moves go a long way "
+          "on a full mix; if you need a large one, the corner is probably in "
+          "the wrong place.")
     .Ring(Bipolar(kEqPalette.bipolar_pos,
                   kEqPalette.bipolar_neg,
                   kEqPalette.bipolar_center));
 
 static VirtualKnob mid_freq = VirtualKnob(2, "Mid Freq")
-    .Exp(200.f, 5000.f)
+    .Exp(200.f, 5000.f).Unit("Hz").Ident("eq.mid.freq")
+    .Help("Centre of the mid band — the one band that is a peak rather than "
+          "a shelf, so it acts on a region and leaves everything either side "
+          "alone. Sweep it with the gain up to find what you are looking for, "
+          "then set the gain properly.")
     .Ring(Level(kEqPalette.arc));
 
 static VirtualKnob mid_gain = VirtualKnob(3, "Mid Gain")
-    .Linear(-15.f, 15.f)
+    .Linear(-15.f, 15.f).Unit("dB").Ident("eq.mid.gain")
+    .Help("How much the mid band lifts or cuts. Its width is set by B3, so "
+          "the same gain can read as a broad tilt or a narrow notch.")
     .Ring(Bipolar(kEqPalette.bipolar_pos,
                   kEqPalette.bipolar_neg,
                   kEqPalette.bipolar_center));
 
 static VirtualKnob hs_freq = VirtualKnob(4, "HS Freq")
-    .Exp(1000.f, 20000.f)
+    .Exp(1000.f, 20000.f).Unit("Hz").Ident("eq.hs.freq")
+    .Help("Corner of the high shelf. Lower corners bring presence and can "
+          "get harsh; higher ones buy air without touching the body of the "
+          "mix.")
     .Ring(Level(kEqPalette.arc));
 
 static VirtualKnob hs_gain = VirtualKnob(5, "HS Gain")
-    .Linear(-15.f, 15.f)
+    .Linear(-15.f, 15.f).Unit("dB").Ident("eq.hs.gain")
+    .Help("How much the high shelf lifts or cuts. Remember the compressor is "
+          "downstream and listening: a top-end boost here will make it work "
+          "harder on the same material.")
     .Ring(Bipolar(kEqPalette.bipolar_pos,
                   kEqPalette.bipolar_neg,
                   kEqPalette.bipolar_center));
@@ -95,7 +115,10 @@ static VirtualKnob hs_gain = VirtualKnob(5, "HS Gain")
  * All six knobs are Level rings; nothing on this page is bipolar. */
 
 static VirtualKnob thresh = VirtualKnob(0, "Thresh")
-    .Linear(-40.f, 0.f)
+    .Linear(-40.f, 0.f).Unit("dB").Ident("comp.thresh")
+    .Help("The level above which the compressor starts working. On a bus you "
+          "usually want it low enough that it is always doing a little, not "
+          "high enough that it only catches the loudest bar.")
     .Ring(Level(kCompPalette.arc));
 
 /* Ratio is tapered in "compression amount" a = 1 - 1/ratio, which is literally
@@ -111,7 +134,11 @@ static VirtualKnob thresh = VirtualKnob(0, "Thresh")
  * The mapping lives here, at the control layer, so CompParams keeps carrying
  * plain engineering units across the seam. */
 static VirtualKnob ratio = VirtualKnob(1, "Ratio")
-    .Linear(0.f, 0.95f)
+    .Linear(0.f, 0.95f).Ident("comp.ratio")
+    .Help("How hard the compressor pulls once it is over the threshold. The "
+          "knob is scaled by compression amount rather than by the ratio "
+          "number, so the gentle settings a glue compressor actually lives at "
+          "get half the travel instead of the first sliver of it.")
     .Ring(Level(kCompPalette.arc));
 
 static inline float RatioFromAmount(float a)
@@ -121,19 +148,31 @@ static inline float RatioFromAmount(float a)
 }
 
 static VirtualKnob attack = VirtualKnob(2, "Attack")
-    .Exp(0.1f, 100.f)
+    .Exp(0.1f, 100.f).Unit("ms").Ident("comp.attack")
+    .Help("How quickly the compressor clamps down. Fast catches transients "
+          "and flattens the front of every hit; slow lets them through and "
+          "compresses what follows, which is what keeps a mix punchy.")
     .Ring(Level(kCompPalette.arc));
 
 static VirtualKnob release = VirtualKnob(3, "Release")
-    .Exp(10.f, 2000.f)
+    .Exp(10.f, 2000.f).Unit("ms").Ident("comp.release")
+    .Help("How quickly it lets go again. Set it against the tempo: releasing "
+          "roughly in time with the track is what turns gain reduction into "
+          "the pumping people mean by glue, and too fast will breathe.")
     .Ring(Level(kCompPalette.arc));
 
 static VirtualKnob makeup = VirtualKnob(4, "Makeup")
-    .Linear(0.f, 20.f)
+    .Linear(0.f, 20.f).Unit("dB").Ident("comp.makeup")
+    .Help("Gain added after compression, to put back what the gain reduction "
+          "took. Each character also applies its own automatic makeup, so "
+          "this is a trim on top of that rather than the whole job.")
     .Ring(Level(kCompPalette.arc));
 
 static VirtualKnob mix = VirtualKnob(5, "Mix")
-    .Linear(0.f, 1.f)
+    .Linear(0.f, 1.f).Ident("comp.mix")
+    .Help("Blends the compressed signal back against the dry one. Turning it "
+          "down is parallel compression: you keep the transients the "
+          "compressor flattened and still get the density underneath.")
     .Ring(Level(kCompPalette.arc));
 
 /* ── Page 3 — Tape saturation (gold) ──────────────────────────────────────
@@ -141,25 +180,41 @@ static VirtualKnob mix = VirtualKnob(5, "Mix")
  * there is no sixth axis worth inventing one for, and a short page is fine. */
 
 static VirtualKnob drive = VirtualKnob(0, "Drive")
-    .Linear(0.f, 24.f)
+    .Linear(0.f, 24.f).Unit("dB").Ident("tape.drive")
+    .Help("How hard the tape stage is pushed. Program level is held across "
+          "the whole range, so this trades peaks for harmonics rather than "
+          "simply turning things up — it gets denser, not louder.")
     .Ring(Level(kSatPalette.arc));
 
 static VirtualKnob sat_mix = VirtualKnob(1, "Sat Mix")
-    .Linear(0.f, 1.f)
+    .Linear(0.f, 1.f).Ident("tape.mix")
+    .Help("Blends the saturated signal against the dry one, for when a "
+          "machine's character is right but the amount of it is not.")
     .Ring(Level(kSatPalette.arc));
 
 static VirtualKnob emphasis = VirtualKnob(2, "Emphasis")
-    .Linear(0.f, 1.f)
+    .Linear(0.f, 1.f).Ident("tape.emphasis")
+    .Help("Tilts the record/playback pair around the saturating stage. This "
+          "is what makes the distortion frequency-dependent instead of "
+          "uniform: turn it up and the highs saturate first, the way tape "
+          "does, rather than the whole spectrum breaking up at once.")
     .Ring(Level(kSatPalette.arc));
 
 static VirtualKnob asym = VirtualKnob(3, "Asym")
-    .Linear(-0.3f, 0.3f)
+    .Linear(-0.3f, 0.3f).Ident("tape.asym")
+    .Help("Pushes the saturation curve off centre so the two halves of the "
+          "waveform clip differently. That asymmetry is what produces even "
+          "harmonics — the warm ones — where a symmetric curve gives only "
+          "odd.")
     .Ring(Bipolar(kSatPalette.bipolar_pos,
                   kSatPalette.bipolar_neg,
                   kSatPalette.bipolar_center));
 
 static VirtualKnob bump = VirtualKnob(4, "Head Bump")
-    .Linear(0.f, 1.f)
+    .Linear(0.f, 1.f).Ident("tape.bump")
+    .Help("The low resonance a tape machine gets from its head geometry. A "
+          "little adds weight down low without the EQ having to reach for "
+          "it; the selected machine sets where it sits.")
     .Ring(Level(kSatPalette.arc));
 
 /* ── Page 4 — Output (red) ────────────────────────────────────────────────
@@ -176,15 +231,24 @@ static VirtualKnob bump = VirtualKnob(4, "Head Bump")
  * could hear. Trim moved to K6 to keep the three mod pots adjacent. */
 
 static VirtualKnob ceiling = VirtualKnob(0, "Ceiling")
-    .Linear(-6.f, -0.1f)
+    .Linear(-6.f, -0.1f).Unit("dB").Ident("out.ceiling")
+    .Help("The hard limit nothing gets past. Set this first — it is the only "
+          "control here that makes a promise about the output, and the rest "
+          "of the chain is easier to judge once the top is fixed.")
     .Ring(Level(kOutPalette.arc));
 
 static VirtualKnob lim_rel = VirtualKnob(1, "Lim Rel")
-    .Exp(10.f, 500.f)
+    .Exp(10.f, 500.f).Unit("ms").Ident("out.lim_rel")
+    .Help("How quickly the limiter recovers after catching a peak. Short is "
+          "louder but will distort bass; long is cleaner but audibly ducks "
+          "the material after a loud hit.")
     .Ring(Level(kOutPalette.arc));
 
 static VirtualKnob trim = VirtualKnob(5, "Trim")
-    .Linear(-12.f, 12.f)
+    .Linear(-12.f, 12.f).Unit("dB").Ident("out.trim")
+    .Help("Level going into the limiter — so this, not the ceiling, is how "
+          "you decide how hard the limiter works. Push it up for loudness "
+          "and more gain reduction; back it off to let the chain breathe.")
     .Ring(Bipolar(kOutPalette.bipolar_pos,
                   kOutPalette.bipolar_neg,
                   kOutPalette.bipolar_center));
@@ -209,27 +273,124 @@ static VirtualKnob trim = VirtualKnob(5, "Trim")
  * src_pot = 4, so both parameter knobs are always painted in the colour of the
  * mode controlling them. Without that, three adjacent knobs would be red on a
  * page where two of them mean something different in each of six positions. */
+static const char* const kModeLabels[6] = {
+    "Off", "Analysis", "Clocked", "Multi LFO", "Smooth Random", "Euclid"};
+
 static VirtualKnob mod_a = VirtualKnob(2, "Mod A")
-    .Linear(0.f, 1.f)
+    .Linear(0.f, 1.f).Ident("mod.a")
+    .Help("The active mode's primary axis — how much, how fast, or how far "
+          "apart, depending on the mode. It is painted in the mode's colour "
+          "so you can see at a glance which one it is answering to.")
     .Ring(GradientFill(kModeSnaps, 6, /*src_pot=*/4, kPageRed));
 
 static VirtualKnob mod_b = VirtualKnob(3, "Mod B")
-    .Linear(0.f, 1.f)
+    .Linear(0.f, 1.f).Ident("mod.b")
+    .Help("The active mode's character — the shape of what Mod A is setting "
+          "the amount of. Analysis is the exception: it generates nothing, "
+          "so it has no character to shape and spends this on sensitivity "
+          "instead.")
     .Ring(GradientFill(kModeSnaps, 6, /*src_pot=*/4, kPageRed));
 
 static VirtualKnob mod_mode = VirtualKnob(4, "Mod Mode")
     .Selector(static_cast<uint8_t>(mod_source::Mode::kCount))
+    .Labels(kModeLabels).Ident("mod.mode")
+    .Help("What the six CV jacks do. Off releases them entirely; the other "
+          "five turn the module into a modulation source for the rest of the "
+          "rack. Changing mode re-routes the jacks, and they are driven to "
+          "0 V before the switches move, so nothing jumps.")
     .Ring(Gradient(kModeSnaps, 6))
     .Pip(GradientSnapPip());
 
-/* Bind knobs to page */
-static Page eq_page   = Page(0).Knobs(ls_freq, ls_gain, mid_freq, mid_gain,
+/* Bind knobs to page. Name and Color label and tint the web programmer's
+ * tabs; the colors match the panel's page colors in mastering_palette.h so
+ * the browser and the module agree on which page is which. */
+static Page eq_page   = Page(0).Name("EQ").Color("#ffa000")
+                               .Help("Three bands — low shelf, mid peak, high "
+                                     "shelf — before anything else in the "
+                                     "chain, so the compressor downstream "
+                                     "reacts to the tone you set here. B3 "
+                                     "cycles the mid band's width.")
+                               .Knobs(ls_freq, ls_gain, mid_freq, mid_gain,
                                       hs_freq, hs_gain);
-static Page comp_page = Page(1).Knobs(thresh, ratio, attack, release,
+static Page comp_page = Page(1).Name("Compressor").Color("#0060ff")
+                               .Help("A log-domain feed-forward glue "
+                                     "compressor, stereo-linked off the two "
+                                     "channels' summed power. B3 cycles the "
+                                     "character, and each one brings its own "
+                                     "knee, sidechain high-pass, and "
+                                     "automatic makeup.")
+                               .Knobs(thresh, ratio, attack, release,
                                       makeup, mix);
-static Page sat_page  = Page(2).Knobs(drive, sat_mix, emphasis, asym, bump);
-static Page out_page  = Page(3).Knobs(ceiling, lim_rel, mod_a, mod_b,
+static Page sat_page  = Page(2).Name("Tape").Color("#ffb030")
+                               .Help("A record/playback emphasis pair around "
+                                     "a saturating knee, oversampled and "
+                                     "antialiased. B3 cycles the machine. "
+                                     "The page has five controls, not six — "
+                                     "there was no sixth axis worth "
+                                     "inventing.")
+                               .Knobs(drive, sat_mix, emphasis, asym, bump);
+static Page out_page  = Page(3).Name("Output").Color("#ff2020")
+                               .Help("The limiter and output trim, plus the "
+                                     "CV modulation source on the three "
+                                     "middle knobs. Dither is always on and "
+                                     "has no control — it was never doing "
+                                     "audible work at a level worth a knob.")
+                               .Knobs(ceiling, lim_rel, mod_a, mod_b,
                                       mod_mode, trim);
+
+/* ── Panel jacks ──────────────────────────────────────────────────────────
+ * Descriptor metadata only — no runtime behaviour, no state, nothing that
+ * reaches a preset. Declared here rather than in manual.cpp so the SeeAlso
+ * cross-references below are checked against the actual knob objects at
+ * build time instead of by string.
+ *
+ * J3..J8 are declared CvBi because that is what they carry in the bipolar
+ * modes; Analysis and Euclid drive the same jacks unipolar, which the help
+ * text covers. Their direction is mode-dependent too, so the per-jack help
+ * is written around "what this carries in each mode" rather than a single
+ * fixed role. */
+static const Jack kJacks[] = {
+    Jack("j1", "Audio In L", JackSig::AudioIn).Short("IN L")
+        .Help("Left input to the chain."),
+    Jack("j2", "Audio In R", JackSig::AudioIn).Short("IN R")
+        .Help("Right input to the chain. The two channels are processed "
+              "stereo-linked throughout — one set of controls, one gain — so "
+              "they cannot drift apart."),
+
+    Jack("j3", "CV 1", JackSig::CvBi).Short("CV1")
+        .Help("Low-band envelope in Analysis. Clock input in Clocked and "
+              "Euclid. An LFO or random voltage in the other modes.")
+        .SeeAlso(mod_mode),
+    Jack("j4", "CV 2", JackSig::CvBi).Short("CV2")
+        .Help("Mid-band envelope in Analysis. Reset input in Clocked, and a "
+              "gate in Euclid. An LFO or random voltage otherwise.")
+        .SeeAlso(mod_mode),
+    Jack("j5", "CV 3", JackSig::CvBi).Short("CV3")
+        .Help("High-band envelope in Analysis, a gate in Euclid, and one of "
+              "the shape or random outputs in the other modes.")
+        .SeeAlso(mod_mode),
+    Jack("j6", "CV 4", JackSig::CvBi).Short("CV4")
+        .Help("Broadband level in Analysis, a gate in Euclid, and one of the "
+              "shape or random outputs otherwise.")
+        .SeeAlso(mod_mode),
+    Jack("j7", "CV 5", JackSig::CvBi).Short("CV5")
+        .Help("Compressor gain reduction in Analysis, a gate in Euclid, an "
+              "output otherwise. This jack and CV 6 update four times faster "
+              "than CV 1-4, which is why the stepped and gated signals are "
+              "put here.")
+        .SeeAlso(mod_mode),
+    Jack("j8", "CV 6", JackSig::CvBi).Short("CV6")
+        .Help("Limiter gain reduction in Analysis, a gate in Euclid, an "
+              "output otherwise. Fast, like CV 5.")
+        .SeeAlso(mod_mode),
+
+    Jack("j9", "Audio Out L", JackSig::AudioOut).Short("OUT L")
+        .Help("Left output, after the limiter and dither."),
+    Jack("j10", "Audio Out R", JackSig::AudioOut).Short("OUT R")
+        .Help("Right output, after the limiter and dither. Latency from "
+              "input is a constant 75 samples and does not change with "
+              "bypass, so a parallel path stays aligned."),
+};
 
 /* Get our SDK surfaces and opt in to everything (no ParamLock, no CvMatrix —
  * this chain is stereo-linked with a single param set, nothing to record). */
@@ -250,6 +411,14 @@ static Settings    settings(hw, &pager);
 static hostlink::Host host(presets, "lapis_philosophorum",
                            "Lapis Philosophorum",
                            LAPIS_VERSION_STR, LAPIS_GIT_HASH);
+
+/* The SDK's stock descriptor buffer is 24 KiB, and this module's manual prose
+ * alone is over half of that before any of the structural JSON around it. An
+ * overflow fails the descriptor build — recoverable, and the host is told why,
+ * but the browser gets no layout until someone notices. SDRAM is 64 MiB and
+ * this firmware uses none of it, so buy the headroom and stop thinking about
+ * it: prose can grow without anyone having to remember this ceiling. */
+static char DSY_SDRAM_BSS s_descriptor[64u * 1024u];
 
 /* ── Persistence: per-page mode/bypass state not carried by any knob ─────
  * Seven single-byte fields; Deserialize clamps so a corrupt/foreign slot can
@@ -695,6 +864,15 @@ int main()
     /* Opting into default settings gestures and controls. */
     settings.UseBrightness();
     settings.UsePresets(presets);
+
+    /* The manual and the jack table are descriptor-only, so order does not
+     * matter here — the descriptor renders at the host's first Poll(), once
+     * everything main() declares is attached. `.Product` makes the module
+     * enumerate under the platform name like every other Hermetic module. */
+    host.Product("Alchemy Lab")
+        .DescriptorBuffer(s_descriptor, sizeof s_descriptor)
+        .Jacks(kJacks)
+        .Attach(lapis::kManual);
 
     /* Preset payload — every Serializable surface gets walked on Save/Load. */
     presets.Manage(pager);

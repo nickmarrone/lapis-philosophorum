@@ -102,6 +102,17 @@ builds with the standard Daisy `make` workflow.
 
 ## Documentation
 
+The module also carries its own manual. Every knob, page, and jack has help
+text compiled into the firmware, alongside long-form sections on the signal
+path, the panel controls, the modulation source, and gain staging — so a
+module plugged into the [web
+programmer](https://hermeticmodular.com/program) explains itself, with no
+manual to go and find. The prose lives next to the declarations it describes
+([`src/mastering.cpp`](src/mastering.cpp)) and in
+[`src/manual.cpp`](src/manual.cpp) for the parts that belong to no single
+control. None of it reaches a preset's schema hash, so editing it can never
+invalidate a saved preset.
+
 - **[User Guide](docs/USER_GUIDE.md)** — how to play the module: the
   signal path, every knob's range and curve, what the LEDs mean, presets,
   settings mode, and gain-staging notes.
@@ -116,6 +127,7 @@ builds with the standard Daisy `make` workflow.
 ├── Makefile              standard Daisy Makefile (libDaisy core underneath)
 ├── src/                  the firmware — this is the part you edit
 │   ├── mastering.cpp         hardware wiring, pages, knobs, buttons, LEDs, presets
+│   ├── manual.*              the in-firmware manual's long-form sections
 │   ├── mastering_dsp.*       chain orchestration + audio callback
 │   ├── dsp_common.h          shared constants and helpers
 │   ├── dsp_biquad.h          matched-magnitude biquads + coefficient inversion

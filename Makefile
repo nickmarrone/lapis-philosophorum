@@ -37,6 +37,7 @@ LIBDAISY_DIR = lib/libDaisy
 CPP_SOURCES = \
     src/mastering.cpp \
     src/mastering_dsp.cpp \
+    src/manual.cpp \
     src/mod_source.cpp
 
 # ── Alchemy SDK, compiled straight from the submodule ───────────────────────
