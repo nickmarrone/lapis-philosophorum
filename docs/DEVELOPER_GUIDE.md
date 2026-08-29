@@ -401,8 +401,8 @@ number to turn if the gates on J4–J6 feel loose on hardware — it trades
 main-thread load against up to 4 ms of gate jitter. Audio is in the SAI
 ISR and is unaffected either way.
 
-Even at 250 Hz this only works because of `SetMcpCvOutVolts` (invariant
-20). Per-jack `SetCvOutVolts` in a loop would be ~1.7 ms.
+Even at 250 Hz this only works because of `StageVolts` + `FlushCvOutputs`
+(invariant 20). Per-jack `SetVolts` in a loop would be ~1.7 ms.
 
 **Routing is applied only on a mode change.** `ApplyModRouting` drives
 every DAC to 0 V *before* touching a DG411, so a jack never connects to a
@@ -1276,12 +1276,15 @@ Things that will bite quietly if broken:
     stubbing, and the harness is the only thing that will catch a
     generator regression — none of this is audible in the audio path.
     (§2, §9)
-20. **Never drive an MCP4728 jack with per-jack `SetCvOutVolts` in a
-    loop.** Each call rewrites all four channels from the shadow *and*
-    pulses LDAC, so four jacks cost four complete I²C transactions —
-    ~1.7 ms at 400 kHz, which does not fit a 1 ms poll. Use
-    `SetMcpCvOutVolts`, which does one `WriteAll` and one `PulseLdac` for
-    all four. (§3)
+20. **Never drive an MCP4728 jack with per-jack `SetVolts` in a loop.**
+    Each call rewrites all four channels from the shadow *and* pulses
+    LDAC, so four jacks cost four complete I²C transactions — ~1.7 ms at
+    400 kHz, which does not fit a 1 ms poll. Stage instead:
+    `CvJack::StageVolts` on every jack, then one `hw.FlushCvOutputs()`,
+    which is one `WriteAll` and one `PulseLdac` for all four. `StageVolts`
+    is also correct on J7/J8 — those backends have no latch to defer, so
+    it writes through — which is why the poll stages all six uniformly
+    and never branches on backend. (§3)
 21. **Unipolar Eurorack clocks and gates need `CvGate`, not `CvEdge`.**
     0 V reads ~0.5 here and +5 V reads ~0.75, so `CvEdge`'s symmetric
     0.30/0.70 defaults catch every rise and never a fall — the "+5 V

@@ -390,17 +390,20 @@ static void PollControls(uint32_t t_ms)
  * All of this lives on the control thread. The engine itself is pure float
  * math in mod_source.cpp; everything here is the hardware seam.
  *
- * Two update rates, because the six jacks are not the same hardware:
+ * StageVolts is the uniform entry point — no branching here on which backend
+ * a jack has — but two update rates still fall out of the hardware underneath:
  *
- *   J7/J8 (jack 4,5) are the STM32's own DAC — one register write. Updated
- *   every 1 ms poll, which is why the ramp and the stepped-random output live
- *   there: their discontinuities are what stepping shows up in.
+ *   J7/J8 (jack 4,5) are the STM32's own DAC. StageVolts has nothing to defer
+ *   there, so it writes the register through immediately and every 1 ms poll
+ *   lands. That is why the ramp and the stepped-random output live on those
+ *   jacks: their discontinuities are what stepping shows up in.
  *
- *   J3..J6 (jack 0..3) are the MCP4728 over I2C. Even batched through
- *   SetMcpCvOutVolts that is one WriteAll plus an LDAC pulse, about 430 us —
- *   far too much for every poll. Flushed every 4th poll instead, so all four
- *   land together at 250 Hz for roughly 11 % of the main thread. Audio is in
- *   the SAI ISR and is not affected either way.
+ *   J3..J6 (jack 0..3) are the MCP4728 over I2C. StageVolts only moves the
+ *   SDK's shared shadow, which is free; the FlushCvOutputs that latches it is
+ *   one WriteAll plus an LDAC pulse, about 430 us — far too much for every
+ *   poll. Flushed every 4th poll instead, so all four land together at 250 Hz
+ *   for roughly 11 % of the main thread. Audio is in the SAI ISR and is not
+ *   affected either way.
  *
  * kMcpFlushTicks is the one number to turn if the Euclid gates on J4..J6 feel
  * loose on hardware: it trades main-thread load against up to 4 ms of gate
@@ -424,18 +427,22 @@ static uint8_t mod_tick_count  = 0;
 
 /** Point every jack at 0 V, then set its DG411 to match the new mode.
  *  Only called when the mode actually changes — these are I2C transactions,
- *  and RouteCvOut goes through the expander. */
+ *  and Enable/DisableCvOutput goes through the expander. */
 static void ApplyModRouting(mod_source::Mode mode)
 {
     /* Drive the DACs to 0 V *before* touching the switches, so a jack never
      * connects to a stale voltage from the previous mode. */
-    const float zeros[mod_source::kNumJacks] = {};
-    hw.SetMcpCvOutVolts(zeros);
-    hw.SetCvOutVolts(4, 0.f);
-    hw.SetCvOutVolts(5, 0.f);
+    for (uint8_t j = 0; j < mod_source::kNumJacks; j++)
+        hw.cv_jacks[j].StageVolts(0.f);
+    hw.FlushCvOutputs();
 
     for (uint8_t j = 0; j < mod_source::kNumJacks; j++)
-        hw.RouteCvOut(j, mod_source::ModSource::JackIsOutput(mode, j));
+    {
+        if (mod_source::ModSource::JackIsOutput(mode, j))
+            hw.cv_jacks[j].EnableCvOutput();
+        else
+            hw.cv_jacks[j].DisableCvOutput();
+    }
 
     mod_routed_mode = static_cast<uint8_t>(mode);
 }
@@ -479,16 +486,18 @@ static void PollModulation(uint32_t t_ms)
 
     mod_engine.Tick(mod_frame);
 
-    /* J7/J8 every tick — cheap. */
-    if (mod_frame.is_output[4]) hw.SetCvOutVolts(4, mod_frame.volts[4]);
-    if (mod_frame.is_output[5]) hw.SetCvOutVolts(5, mod_frame.volts[5]);
+    /* Stage every jack every tick. J7/J8 reach the panel here; J3..J6 only
+     * move the shadow and wait for the flush below. Non-output jacks carry
+     * 0 V in the frame and their DG411 is open, so staging all six is
+     * harmless and saves branching on is_output. */
+    for (uint8_t j = 0; j < mod_source::kNumJacks; j++)
+        hw.cv_jacks[j].StageVolts(mod_frame.volts[j]);
 
-    /* J3..J6 batched, every kMcpFlushTicks. Non-output jacks carry 0 V in the
-     * frame and their DG411 is open, so writing all four is harmless. */
+    /* One WriteAll + LDAC pulse latches J3..J6 together, every kMcpFlushTicks. */
     if (++mod_tick_count >= kMcpFlushTicks)
     {
         mod_tick_count = 0;
-        hw.SetMcpCvOutVolts(mod_frame.volts);
+        hw.FlushCvOutputs();
     }
 }
 
