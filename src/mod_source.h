@@ -49,9 +49,29 @@ enum class Mode : uint8_t {
     kCount
 };
 
-/** Number of B3 zones each mode's secondary cycles through. Off and any
- *  future mode without a secondary report 1, which makes the tap a no-op. */
-uint8_t SecondaryZones(Mode m);
+/** Number of B3 zones each mode's secondary cycles through, indexed by Mode.
+ *  Off and any future mode without a secondary report 1, which makes the tap
+ *  a no-op.
+ *
+ *  A table rather than a switch so it can be read at compile time: the
+ *  firmware describes these to the host as one labelled enum field per mode,
+ *  and those label arrays have to agree with these counts or the descriptor
+ *  offers a zone the engine will clamp away. mastering.cpp static_asserts
+ *  the two against each other. */
+constexpr uint8_t kSecondaryZones[static_cast<uint8_t>(Mode::kCount)] = {
+    1,  // Off          — nothing to cycle
+    2,  // Analysis     — polarity: normal / inverted
+    5,  // Clocked      — clock ratio
+    3,  // MultiLfo     — ratio set
+    4,  // SmoothRandom — rate range
+    5,  // Euclid       — step-length set
+};
+
+inline uint8_t SecondaryZones(Mode m)
+{
+    const uint8_t i = static_cast<uint8_t>(m);
+    return (i < static_cast<uint8_t>(Mode::kCount)) ? kSecondaryZones[i] : 1u;
+}
 
 /**
  * The active mode's controls.

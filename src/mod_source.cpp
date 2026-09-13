@@ -208,19 +208,6 @@ float ShapeAt(float pos, float phase, float held)
     return Lerp(ShapeSlot(i, phase, held), ShapeSlot(next, phase, held), f);
 }
 
-uint8_t SecondaryZones(Mode m)
-{
-    switch (m)
-    {
-        case Mode::Analysis:     return 2;   // polarity: normal / inverted
-        case Mode::Clocked:      return 5;   // clock ratio
-        case Mode::MultiLfo:     return 3;   // ratio set
-        case Mode::SmoothRandom: return 4;   // rate range
-        case Mode::Euclid:       return 5;   // step-length set
-        default:                 return 1;   // Off — the tap is a no-op
-    }
-}
-
 const float* Ratios(RatioSet s)
 {
     switch (s)

@@ -27,21 +27,23 @@
  *   state and secondary mode
  * - Save and recall presets with flash wear leveling
  * - Settings menu for managing basics
- * - HostLink over the panel USB-C: presets and settings are manageable from
- *   the browser, and `make program-live` reboots the module into DFU over
- *   that same connection instead of a power cycle
+ * - HostLink over the panel USB-C: presets, settings, and every button's
+ *   state are manageable from the browser, and `make program-live` reboots
+ *   the module into DFU over that same connection instead of a power cycle
  */
 
 #include "daisy_seed.h"
 #include "alchemy/hw/alchemy_lab.h"
 #include "alchemy/control/cv_edge.h"
 #include "alchemy/host_link/host.h"
+#include "alchemy/surface/button_bank.h"
 #include "alchemy/surface/control_loop.h"
 #include "alchemy/surface/jack.h"
 #include "alchemy/surface/page.h"
 #include "alchemy/surface/pager.h"
 #include "alchemy/surface/presets.h"
 #include "alchemy/surface/settings.h"
+#include "alchemy/surface/virtual_button.h"
 #include "alchemy/surface/virtual_knob.h"
 
 #include "manual.h"
@@ -301,6 +303,134 @@ static VirtualKnob mod_mode = VirtualKnob(4, "Mod Mode")
     .Ring(Gradient(kModeSnaps, 6))
     .Pip(GradientSnapPip());
 
+/* Longest press still read as a tap, enforced by ChordGate below.
+ *
+ * This was briefly a no-op Hold() on every B2/B3 button — ButtonBank
+ * suppresses the tap once a hold fires, so the ceiling came for free. It
+ * also put a gesture with an empty label on all eight buttons in the
+ * descriptor, and the browser dutifully drew every one of them. A gesture
+ * that exists only to cancel another gesture is not something the host
+ * should ever hear about, so the ceiling lives with the chord latch
+ * instead: one place, no wire presence. */
+static constexpr uint32_t kTapMs = 400;
+
+/* ── Panel buttons ────────────────────────────────────────────────────────
+ * B2 and B3 are one physical button each, but what they do is per page, so
+ * each page declares its own VirtualButton on the same hardware index. That
+ * is the ButtonBank model: state is keyed by the object, pages are dispatch
+ * scope, and one press only ever reaches the buttons the active page lists.
+ *
+ * Everything these used to need by hand — a preset byte, a modulus, an LED
+ * colour table, and a HostLink description — now falls out of the single
+ * declaration. The bank persists one byte per stateful button and describes
+ * it as an editable enum field, which is what makes the bypasses and the
+ * secondary modes reachable from the browser at all; before this they lived
+ * in a hand-rolled struct that the descriptor could only emit as an opaque
+ * blob.
+ *
+ * Zone 0 is the engaged / default state everywhere, so a virgin module comes
+ * up with the whole chain in circuit.
+ *
+ * The tap is deliberately left underived on B2 and B3: see ChordGate for why
+ * it is a callback rather than a plain Action. */
+static const char* const kBypassLabels[2] = {"Engaged", "Bypassed"};
+static const char* const kMidQLabels[3]   = {"Wide", "Medium", "Narrow"};
+static const char* const kCompCharLabels[3] =
+    {"Precise", "Adaptive", "Glue"};
+static const char* const kSatCharLabels[3] =
+    {"30 ips", "15 ips", "Saturated"};
+
+/* Forward declarations: the gesture callbacks need the bank and the buttons
+ * they mutate, and the buttons need the callbacks. Each tap passes its own
+ * button as the callback context — taking the address of a static inside its
+ * own initializer is well defined, and nothing can call back into it until
+ * long after main() has finished constructing everything. */
+static void TapBypass(void* ctx);
+static void TapSecondary(void* ctx);
+static void TapModSecondary(void* ctx);
+
+/* B1 belongs to the Pager, which polls it directly and advances the page.
+ * Declaring it here is metadata only — Action() writes the descriptor's
+ * gesture list without touching tap_/hold_, so ButtonBank enrolls it as a
+ * modal button, never dispatches it, and never calls ConsumeButton on the
+ * pager's own button. Without this the host has no name for B1 at all and
+ * falls back to drawing an unlabeled chip off the board's button count.
+ *
+ * Global() rather than a page: B1 does the same thing on all four, and a
+ * global modal entry omits the descriptor's "page" key, which per §5.5 is
+ * exactly "render it on every page". */
+static VirtualButton page_button = VirtualButton(kButtonB1, "Page")
+    .Ident("nav.page")
+    .Action("tap", "Next page")
+    .Help("Cycles the four pages. The knobs do not jump when the page "
+          "changes: a knob stays where the page left it until the physical "
+          "pot passes back through that value. While the settings menu is "
+          "open this steps through the settings pages instead.");
+
+static VirtualButton eq_bypass = VirtualButton(kButtonB2, "EQ")
+    .Ident("eq.bypass").Selector(kBypassLabels).Colors(kEqBypassColors)
+    .Tap(TapBypass, "Bypass / Engage the EQ", &eq_bypass)
+    .Help("Takes the three bands out of circuit. Latency does not change "
+          "with bypass, so a parallel path stays aligned either way.");
+
+static VirtualButton eq_midq = VirtualButton(kButtonB3, "Mid Q")
+    .Ident("eq.midq").Selector(kMidQLabels).Colors(kQColors)
+    .Anchor("eq.mid.freq")
+    .Tap(TapSecondary, "Cycle Wide / Medium / Narrow", &eq_midq)
+    .Help("The mid band's width: 0.707, 1.5, then 4.0. Anchored to Mid Freq "
+          "in the browser because it is the same band's second axis.");
+
+static VirtualButton comp_bypass = VirtualButton(kButtonB2, "Compressor")
+    .Ident("comp.bypass").Selector(kBypassLabels).Colors(kCompBypassColors)
+    .Tap(TapBypass, "Bypass / Engage the compressor", &comp_bypass)
+    .Help("Takes the compressor out of circuit without changing latency.");
+
+static VirtualButton comp_char = VirtualButton(kButtonB3, "Character")
+    .Ident("comp.char").Selector(kCompCharLabels).Colors(kCharColors)
+    .Tap(TapSecondary, "Cycle Precise / Adaptive / Glue", &comp_char)
+    .Help("Each character brings its own knee, sidechain high-pass and "
+          "automatic makeup — one control over three linked decisions.");
+
+static VirtualButton sat_bypass = VirtualButton(kButtonB2, "Tape")
+    .Ident("sat.bypass").Selector(kBypassLabels).Colors(kSatBypassColors)
+    .Tap(TapBypass, "Bypass / Engage the tape stage", &sat_bypass)
+    .Help("Takes the emphasis pair and the saturating knee out of circuit.");
+
+static VirtualButton sat_char = VirtualButton(kButtonB3, "Machine")
+    .Ident("sat.char").Selector(kSatCharLabels).Colors(kSatColors)
+    .Tap(TapSecondary, "Cycle 30 ips / 15 ips / Saturated", &sat_char)
+    .Help("The same tape run progressively harder — speed and head bump "
+          "move together, the way they do on a real machine.");
+
+static VirtualButton lim_bypass = VirtualButton(kButtonB2, "Limiter")
+    .Ident("lim.bypass").Selector(kBypassLabels).Colors(kLimBypassColors)
+    .Tap(TapBypass, "Bypass / Engage the limiter", &lim_bypass)
+    .Help("Takes the lookahead limiter out of circuit. Trim and dither stay "
+          "in either way.");
+
+/* Page 4's B3 is the one button on the panel with no fixed state of its own:
+ * it cycles whichever modulation mode K5 currently selects, and those modes
+ * do not agree on how many zones there are (2 to 5, and Off has none). A
+ * VirtualButton's zone count freezes at declaration, so this cannot be a
+ * stateful button — it is modal, and the five per-mode values live in the
+ * ModSecondary component below, where each one gets its own labelled enum
+ * field in the descriptor.
+ *
+ * The trade reads well from the browser: instead of one control whose
+ * meaning depends on a knob position the host cannot see, you get five
+ * named controls you can set directly, and a chip saying what the panel
+ * button does to them. */
+static VirtualButton mod_secondary = VirtualButton(kButtonB3, "Secondary")
+    .Ident("mod.sec.cycle")
+    .Tap(TapModSecondary, "Cycle the active mode's secondary")
+    .Help("Cycles the secondary of whichever mode Mod Mode currently "
+          "selects — the clock ratio, the LFO ratio set, the random rate "
+          "range, the Euclidean step set, or Analysis polarity. It does "
+          "nothing in Off, which has no secondary. Each mode remembers its "
+          "own, so switching away and back returns to where you left it.");
+
+static ButtonBank buttons;
+
 /* Bind knobs to page. Name and Color label and tint the web programmer's
  * tabs; the colors match the panel's page colors in mastering_palette.h so
  * the browser and the module agree on which page is which. */
@@ -311,7 +441,8 @@ static Page eq_page   = Page(0).Name("EQ").Color("#ffa000")
                                      "reacts to the tone you set here. B3 "
                                      "cycles the mid band's width.")
                                .Knobs(ls_freq, ls_gain, mid_freq, mid_gain,
-                                      hs_freq, hs_gain);
+                                      hs_freq, hs_gain)
+                               .Buttons(eq_bypass, eq_midq);
 static Page comp_page = Page(1).Name("Compressor").Color("#0060ff")
                                .Help("A log-domain feed-forward glue "
                                      "compressor, stereo-linked off the two "
@@ -320,7 +451,8 @@ static Page comp_page = Page(1).Name("Compressor").Color("#0060ff")
                                      "knee, sidechain high-pass, and "
                                      "automatic makeup.")
                                .Knobs(thresh, ratio, attack, release,
-                                      makeup, mix);
+                                      makeup, mix)
+                               .Buttons(comp_bypass, comp_char);
 static Page sat_page  = Page(2).Name("Tape").Color("#ffb030")
                                .Help("A record/playback emphasis pair around "
                                      "a saturating knee, oversampled and "
@@ -328,7 +460,8 @@ static Page sat_page  = Page(2).Name("Tape").Color("#ffb030")
                                      "The page has five controls, not six — "
                                      "there was no sixth axis worth "
                                      "inventing.")
-                               .Knobs(drive, sat_mix, emphasis, asym, bump);
+                               .Knobs(drive, sat_mix, emphasis, asym, bump)
+                               .Buttons(sat_bypass, sat_char);
 static Page out_page  = Page(3).Name("Output").Color("#ff2020")
                                .Help("The limiter and output trim, plus the "
                                      "CV modulation source on the three "
@@ -336,7 +469,8 @@ static Page out_page  = Page(3).Name("Output").Color("#ff2020")
                                      "has no control — it was never doing "
                                      "audible work at a level worth a knob.")
                                .Knobs(ceiling, lim_rel, mod_a, mod_b,
-                                      mod_mode, trim);
+                                      mod_mode, trim)
+                               .Buttons(lim_bypass, mod_secondary);
 
 /* ── Panel jacks ──────────────────────────────────────────────────────────
  * Descriptor metadata only — no runtime behaviour, no state, nothing that
@@ -420,154 +554,261 @@ static hostlink::Host host(presets, "lapis_philosophorum",
  * it: prose can grow without anyone having to remember this ceiling. */
 static char DSY_SDRAM_BSS s_descriptor[64u * 1024u];
 
-/* ── Persistence: per-page mode/bypass state not carried by any knob ─────
- * Seven single-byte fields; Deserialize clamps so a corrupt/foreign slot can
- * never push an out-of-range index into the DSP. */
-struct ChainModes : public alchemy::Serializable
+/* ── Persistence: the modulation secondaries ────────────────────────────
+ * Everything else B2 and B3 used to store now lives in the ButtonBank, one
+ * byte per VirtualButton, described to the host as a labelled enum. These
+ * five cannot: they are selected by a knob rather than owned by a button,
+ * and their zone counts disagree (2 to 5), so they get their own component
+ * and their own Describe().
+ *
+ * Indexed by mod_source::Mode minus one — Off has no secondary and no byte,
+ * which is the one layout change from the struct this replaces. Every mode
+ * with something to cycle has a slot; adding a mode means adding a row to
+ * kSecondary below and nothing else.
+ *
+ * Zero is the right default everywhere except Euclid, whose zones are
+ * ordered by cycle length rather than by which one the module has always
+ * shipped with. Index 2 is the Classic 16/12/9/7/5 grid, so a virgin module
+ * still comes up sounding like the firmware it replaces. */
+struct ModSecondary : public alchemy::Serializable
 {
-    uint8_t eq_bypass      = 0;
-    uint8_t comp_bypass    = 0;
-    uint8_t sat_bypass     = 0;
-    uint8_t mid_q_index    = 0;
-    uint8_t comp_character = 0;
-    uint8_t sat_character  = 0;
-    uint8_t lim_bypass     = 0;
-
-    /* One secondary index per modulation mode, so each remembers its own —
-     * switching from Clocked to Euclid and back returns to the clock ratio
-     * you left, not to whatever the step set happened to be. Indexed by
-     * mod_source::Mode; slot 0 (Off) is unused and always reads 0.
-     *
-     * Zero is the right default everywhere except Euclid, whose zones are
-     * ordered by cycle length rather than by which one the module has always
-     * shipped with. Index 2 is the Classic 16/12/9/7/5 grid, so a virgin
-     * module still comes up sounding like the firmware it replaces. */
-    uint8_t mod_secondary[static_cast<uint8_t>(mod_source::Mode::kCount)] = {
-        0,  // Off
-        0,  // Analysis     — normal polarity
-        0,  // Clocked      — 1/4 clock ratio
-        0,  // MultiLfo     — Golden ratios
-        0,  // SmoothRandom — glacial
-        2,  // Euclid       — Classic step set
+    /* One row per mode with a secondary, in Mode order after Off. Each zone
+     * count has to match what the engine will actually accept — the
+     * static_assert under the struct is what keeps the two honest, so a new
+     * mode or a widened secondary fails the build rather than shipping a
+     * descriptor offering a zone mod_source clamps away. */
+    struct Row
+    {
+        const char* id;
+        const char* name;
+        uint8_t     zones;
+        uint8_t     def;
+        const char* disp;   /* enum display hint, labels included */
+        const char* help;
     };
 
-    static constexpr size_t kNumModes =
-        static_cast<size_t>(mod_source::Mode::kCount);
+    static constexpr uint8_t kNumRows =
+        static_cast<uint8_t>(mod_source::Mode::kCount) - 1u;
 
-    size_t SerializedSize() const override { return 7 + kNumModes; }
+    static constexpr Row kRows[kNumRows] = {
+        {"mod.sec.analysis", "Analysis Polarity", 2, 0,
+         "{\"kind\":\"enum\",\"labels\":[\"Normal\",\"Inverted\"]}",
+         "Inverted is the duck-on-loud patch: full volts at silence, "
+         "falling to zero as the chain fills up. The outputs are unipolar, "
+         "so there is no way to get this downstream without an inverter."},
+        {"mod.sec.clocked", "Clock Ratio", 5, 0,
+         "{\"kind\":\"enum\",\"labels\":[\"1/4\",\"1/2\",\"1x\",\"2x\",\"4x\"]}",
+         "Multiplies the incoming clock. Free-runs at 1 Hz until a clock "
+         "actually arrives, so the mode is never silently dead."},
+        {"mod.sec.multilfo", "Ratio Set", 3, 0,
+         "{\"kind\":\"enum\",\"labels\":[\"Golden\",\"Prime\",\"Narrow\"]}",
+         "How far apart the six LFOs run. Golden and Prime never reline; "
+         "Narrow keeps them within a 1.75:1 spread, close enough to read as "
+         "one gesture seen six ways."},
+        {"mod.sec.random", "Rate Range", 4, 0,
+         "{\"kind\":\"enum\",\"labels\":[\"Glacial\",\"Slow\",\"Medium\","
+         "\"Quick\"]}",
+         "The base rate of the shared walk, from eight-second segments to "
+         "something fast enough to be percussive."},
+        {"mod.sec.euclid", "Step Set", 5, 2,
+         "{\"kind\":\"enum\",\"labels\":[\"Tight\",\"Compact\",\"Classic\","
+         "\"Odd\",\"Long\"]}",
+         "The five pattern lengths, ordered by how long the ensemble takes "
+         "to reline — 840 clocks for Tight, 109395 for Long. No two sets "
+         "share a first element, so a patch using a single output still "
+         "hears the button move."},
+    };
+
+    uint8_t zone[kNumRows] = {
+        kRows[0].def, kRows[1].def, kRows[2].def, kRows[3].def, kRows[4].def,
+    };
+
+    /** Row index for a mode, or -1 for Off (and anything future without a
+     *  secondary). The single place the Mode-to-slot offset is encoded. */
+    static int Index(mod_source::Mode m)
+    {
+        const uint8_t i = static_cast<uint8_t>(m);
+        return (i == 0u || i > kNumRows) ? -1 : static_cast<int>(i - 1u);
+    }
+
+    /** The secondary the engine should run for @p m. Off has none. */
+    uint8_t ValueFor(mod_source::Mode m) const
+    {
+        const int i = Index(m);
+        return (i < 0) ? 0u : zone[i];
+    }
+
+    /** B3's tap on the Output page. A no-op in Off, exactly as before. */
+    void Cycle(mod_source::Mode m)
+    {
+        const int i = Index(m);
+        if (i < 0) return;
+        zone[i] = static_cast<uint8_t>((zone[i] + 1u) % kRows[i].zones);
+    }
+
+    size_t SerializedSize() const override { return kNumRows; }
 
     void Serialize(uint8_t* out) const override
     {
-        out[0] = eq_bypass;
-        out[1] = comp_bypass;
-        out[2] = sat_bypass;
-        out[3] = mid_q_index;
-        out[4] = comp_character;
-        out[5] = sat_character;
-        out[6] = lim_bypass;
-        for (size_t i = 0; i < kNumModes; i++)
-            out[7 + i] = mod_secondary[i];
+        for (uint8_t i = 0; i < kNumRows; i++) out[i] = zone[i];
     }
 
     bool Deserialize(const uint8_t* in) override
     {
-        eq_bypass      = in[0] & 1u;
-        comp_bypass    = in[1] & 1u;
-        sat_bypass     = in[2] & 1u;
-        mid_q_index    = in[3] % 3u;
-        comp_character = in[4] % 3u;
-        sat_character  = in[5] % 3u;
-        lim_bypass     = in[6] & 1u;
-        /* Clamp against each mode's own zone count, so a corrupt or foreign
+        /* Clamp against each row's own zone count, so a corrupt or foreign
          * slot can never index past kClockRatio[] or the ratio tables. */
-        for (size_t i = 0; i < kNumModes; i++)
-        {
-            const uint8_t zones =
-                mod_source::SecondaryZones(static_cast<mod_source::Mode>(i));
-            mod_secondary[i] = static_cast<uint8_t>(in[7 + i] % zones);
-        }
+        for (uint8_t i = 0; i < kNumRows; i++)
+            zone[i] = static_cast<uint8_t>(in[i] % kRows[i].zones);
         return true;
     }
 
-    /* MST5. Bumped from MST4 when the Output page was relaid out: Trim moved
-     * from pot 2 to pot 5, the mode selector from pot 5 to pot 4, and pots 2
-     * and 3 became the modulation source's two parameter knobs. Nothing about
-     * the *serialised* layout changed — but every stored pot position on page
-     * 4 now means something different, and Pager's own SchemaHash cannot see
-     * that, since num_pages and num_pots are both unchanged. Loading an MST4
-     * slot would silently apply the old Trim value as a shape rotation and the
-     * old Dither depth as a shape spread. The bump is the only thing standing
-     * between a preset and that.
+    /* Five one-byte enum fields, attributed to the Output page so the
+     * browser draws them in that page's card next to the mode selector
+     * they belong to. This is the whole point of splitting them out of the
+     * old struct: the host could only ever see that as an opaque blob. */
+    bool Describe(hostlink::ComponentWriter& w) const override
+    {
+        w.Ident("mod_sec").Label("Modulation Secondaries");
+        for (uint8_t i = 0; i < kNumRows; i++)
+            if (!w.Field(kRows[i].id, kRows[i].name, i,
+                         hostlink::FieldType::Enum,
+                         static_cast<float>(kRows[i].def), kRows[i].disp,
+                         kRows[i].zones, /*page=*/3, /*pot=*/-1,
+                         kRows[i].help))
+                return false;
+        return true;
+    }
+
+    /* MST6. Bumped from MST5 for the ButtonBank migration: the seven mode
+     * and bypass bytes moved out to the bank (which folds its own roster
+     * into Presets::SchemaHash), Off's unused secondary byte went away, and
+     * what is left here is five bytes that used to sit at offset 7.
      *
-     * MST4 was the CV modulation source arriving with six per-mode secondary
-     * bytes; MST3 predates it.
-     *
-     * The Pager does NOT invalidate independently this time — its own
-     * SchemaHash folds in num_pages, which is still 4, and num_pots, still 6.
-     * But Presets::SchemaHash is the XOR of every managed component's hash, so
-     * bumping this one invalidates the whole slot: an MST3 preset fails the
-     * gate in HasValid and nothing is deserialized, Pager included.
-     *
-     * That matters more than it sounds. Pager's default stored value is 0.5,
-     * and 0.5 on K5's Selector(6) is MultiLfo — so without the guard in main()
-     * a module with an old preset (or no preset at all) would boot with six
-     * LFOs already driving the jacks. main() forces K5 to Off whenever
-     * BootLoad returns false; that is what makes this bump safe. */
-    uint32_t SchemaHash() const override { return 0x4D535435u; }
+     * Presets::SchemaHash is the XOR of every managed component, so this
+     * invalidates the whole slot and BootLoad returns false — which is what
+     * the K5-forced-to-Off guard in main() exists to catch. See the MST5
+     * note in the git history for why that guard matters. */
+    uint32_t SchemaHash() const override { return 0x4D535436u; }
 };
-static ChainModes modes;
 
-/* ── B2/B3 tap detection ──────────────────────────────────────────────────
- * Settings enters on B2+B3 both held 2000 ms and exits on the next B2/B3
- * rising edge; it never consumes edge flags itself. To coexist we derive
- * our own edges from Pressed() only — RisingEdge()/FallingEdge() must never
- * be called anywhere in this file, since Settings depends on seeing them
- * live. A tap that turns out to be part of a chord (either button already
- * down, or Settings active/was-active) is swallowed rather than fired. */
-static constexpr uint32_t kTapMs = 400;
+/* Rows are offset by one from Mode (Off has no row), so row i describes
+ * Mode i+1. Checked here rather than in the struct because the class is
+ * still incomplete inside its own body. */
+static constexpr bool ModSecondaryZonesAgree()
+{
+    for (uint8_t i = 0; i < ModSecondary::kNumRows; i++)
+        if (ModSecondary::kRows[i].zones != mod_source::kSecondaryZones[i + 1u])
+            return false;
+    return true;
+}
+static_assert(ModSecondaryZonesAgree(),
+              "ModSecondary::kRows zone counts disagree with "
+              "mod_source::kSecondaryZones — the descriptor would offer a "
+              "zone the engine clamps away");
 
-struct TapDetector {
-    bool prev_pressed = false, chorded = false;
-    uint32_t press_t = 0;
-    bool tap = false;                            // consumed by OnFrame
-    void Poll(uint32_t t, bool pressed, bool other_pressed,
-              bool settings_active, bool settings_was_active) {
-        if (pressed && !prev_pressed) {
-            press_t = t;
-            chorded = settings_was_active || settings_active || other_pressed;
-        }
-        if (pressed && (other_pressed || settings_active)) chorded = true;
-        if (!pressed && prev_pressed)
-            if (!chorded && (t - press_t) < kTapMs) tap = true;
+static ModSecondary mod_sec;
+
+/* ── B2/B3 chord suppression ──────────────────────────────────────────────
+ * ButtonBank owns edge detection and gesture dispatch now, but it has one
+ * behaviour the hand-rolled detector did not: it has no idea two buttons
+ * were pressed together. Settings enters on B2+B3 both held 2000 ms, and
+ * the SDK only claims those buttons once the chord *completes* — so a chord
+ * the user abandons early would otherwise fire a bypass toggle and a mode
+ * cycle on the way out.
+ *
+ * So both of the old detector's guards live here: a press that ever
+ * overlapped its sibling, and a press that ran past kTapMs. The tap
+ * callbacks consult the pair and drop the tap either way.
+ *
+ * Latched rather than sampled at release time on purpose. Press B2, press
+ * B3, release B3 first, then B2: sampling at release would suppress B3's
+ * tap (B2 still down) and let B2's through (B3 already up). Latching at
+ * press time — and holding the latch for as long as the button is down —
+ * gets both, whichever order they come up in.
+ *
+ * Like the detector it replaces, this reads Pressed() only — but not for
+ * the reason that detector gave. No SDK surface reads the edge flags at
+ * all: Settings, Pager, ParamLock and ButtonBank each derive their own
+ * edges from Pressed(). IButton::RisingEdge()/FallingEdge() are
+ * consume-on-read with no owner, so calling them here would be a
+ * destructive read of a shared resource that any future surface might
+ * start depending on. Pressed() is idempotent; stay on it. */
+struct ChordGate
+{
+    bool     prev_pressed = false;
+    bool     chorded      = false;
+    uint32_t press_t      = 0;
+    uint32_t held_ms      = 0;
+
+    void Poll(uint32_t t, bool pressed, bool other_pressed)
+    {
+        if (pressed && !prev_pressed) { press_t = t; chorded = other_pressed; }
+        if (pressed && other_pressed) chorded = true;
+        if (pressed) held_ms = t - press_t;
+        else         { chorded = false; held_ms = 0; }
         prev_pressed = pressed;
     }
+
+    /* Both of the old detector's guards, read by the tap callbacks: a press
+     * that overlapped its sibling, or that ran past the tap ceiling, is not
+     * a tap. Sampled one poll before the release that fires the tap, so
+     * these still describe the press rather than the gap after it. */
+    bool Suppressed() const { return chorded || held_ms >= kTapMs; }
 };
-static TapDetector b2_tap, b3_tap;
+static ChordGate b2_chord, b3_chord;
 
-static void PollTaps(uint32_t t_ms)
+static void PollChords(uint32_t t_ms)
 {
-    static bool settings_was_active = false;
-
-    const bool settings_active = settings.IsActive();
-    const bool b2_pressed      = hw.buttons[1].Pressed();
-    const bool b3_pressed      = hw.buttons[2].Pressed();
-
-    b2_tap.Poll(t_ms, b2_pressed, b3_pressed, settings_active, settings_was_active);
-    b3_tap.Poll(t_ms, b3_pressed, b2_pressed, settings_active, settings_was_active);
-
-    /* Must be updated after both detectors ran — it suppresses the
-     * settings-exit press on the frame Settings becomes active/inactive. */
-    settings_was_active = settings_active;
+    const bool b2_pressed = hw.buttons[1].Pressed();
+    const bool b3_pressed = hw.buttons[2].Pressed();
+    b2_chord.Poll(t_ms, b2_pressed, b3_pressed);
+    b3_chord.Poll(t_ms, b3_pressed, b2_pressed);
 }
 
-/* ControlLoop takes a single OnPoll hook, so the tap detector and the
+/* ── Button gestures ──────────────────────────────────────────────────────
+ * All three run in ControlLoop's 1 ms poll, dispatched by the bank against
+ * the page that was active when the press began.
+ *
+ * The taps are callbacks rather than plain Action::Toggle/Cycle for one
+ * reason: a plain action mutates unconditionally, and these have to consult
+ * the chord gate first. The bank still owns the state — every callback ends
+ * in SetZone, so the cell, the preset byte and the descriptor field stay a
+ * single source of truth, and a host write lands in exactly the same place
+ * a panel press does. */
+static void TapBypass(void* ctx)
+{
+    if (b2_chord.Suppressed()) return;
+    const VirtualButton* b = static_cast<const VirtualButton*>(ctx);
+    buttons.SetZone(*b, buttons.ZoneOf(*b) ? 0u : 1u);
+}
+
+static void TapSecondary(void* ctx)
+{
+    if (b3_chord.Suppressed()) return;
+    const VirtualButton* b = static_cast<const VirtualButton*>(ctx);
+    buttons.SetZone(*b, static_cast<uint8_t>((buttons.ZoneOf(*b) + 1u)
+                                             % b->Zones()));
+}
+
+static void TapModSecondary(void*)
+{
+    if (b3_chord.Suppressed()) return;
+    mod_sec.Cycle(static_cast<mod_source::Mode>(mod_mode.Value()));
+}
+
+/* ControlLoop takes a single OnPoll hook, so the chord gate and the
  * modulation tick share one. Both want the same 1 ms cadence and neither
- * depends on the other; PollModulation is defined below. */
+ * depends on the other; PollModulation is defined below.
+ *
+ * The hook runs after ButtonBank::PollButtons in the same 1 ms iteration,
+ * so the chord latch a tap callback reads is one poll old. That does not
+ * matter: it only has to answer "did this press ever overlap its sibling",
+ * and no debounced press is over inside a single millisecond. */
 static void PollModulation(uint32_t t_ms);
 
 static void PollControls(uint32_t t_ms)
 {
-    PollTaps(t_ms);
+    PollChords(t_ms);
     PollModulation(t_ms);
 }
 
@@ -694,66 +935,37 @@ static constexpr float kMidQTable[3] = {0.707f, 1.5f, 4.0f};
  * free — nothing here is edge-triggered). */
 static void UpdateParams()
 {
-    const uint8_t page = pager.Page();
-
-    /* B2 always bypasses the stage the current page owns. */
-    if (b2_tap.tap) {
-        b2_tap.tap = false;
-        switch (page) {
-            case 0:  modes.eq_bypass   = !modes.eq_bypass;   break;
-            case 1:  modes.comp_bypass = !modes.comp_bypass; break;
-            case 2:  modes.sat_bypass  = !modes.sat_bypass;  break;
-            default: modes.lim_bypass  = !modes.lim_bypass;  break;
-        }
-    }
-    /* B3 cycles the current page's secondary mode. On the Output page that is
-     * the active modulation mode's own secondary, whose zone count varies by
-     * mode — so the modulus comes from the table rather than a literal. */
-    const uint8_t mod_mode_idx = static_cast<uint8_t>(mod_mode.Value());
-    if (b3_tap.tap) {
-        b3_tap.tap = false;
-        switch (page) {
-            case 0: modes.mid_q_index    = (modes.mid_q_index + 1) % 3;    break;
-            case 1: modes.comp_character = (modes.comp_character + 1) % 3; break;
-            case 2: modes.sat_character  = (modes.sat_character + 1) % 3;  break;
-            case 3: {
-                const uint8_t zones = mod_source::SecondaryZones(
-                    static_cast<mod_source::Mode>(mod_mode_idx));
-                modes.mod_secondary[mod_mode_idx] =
-                    static_cast<uint8_t>(
-                        (modes.mod_secondary[mod_mode_idx] + 1) % zones);
-                break;
-            }
-            default: break;
-        }
-    }
+    /* Button state is pulled, not pushed: the bank already applied every
+     * gesture and every host or preset write to its cells by the time this
+     * runs, so there is nothing to edge-detect here. Same reason every Set*
+     * below is unconditional. */
 
     mastering_dsp::SetEq({
         ls_freq.Value(),  ls_gain.Value(),
-        mid_freq.Value(), mid_gain.Value(), kMidQTable[modes.mid_q_index],
+        mid_freq.Value(), mid_gain.Value(), kMidQTable[eq_midq.Zone()],
         hs_freq.Value(),  hs_gain.Value(),
-        modes.eq_bypass != 0,
+        eq_bypass.Zone() != 0,
     });
 
     mastering_dsp::SetComp({
         thresh.Value(), RatioFromAmount(ratio.Value()),
         attack.Value(), release.Value(),
         makeup.Value(), mix.Value(),
-        modes.comp_character,
-        modes.comp_bypass != 0,
+        comp_char.Zone(),
+        comp_bypass.Zone() != 0,
     });
 
     mastering_dsp::SetSat({
         drive.Value(), sat_mix.Value(), emphasis.Value(),
         asym.Value(), bump.Value(),
-        modes.sat_character,
-        modes.sat_bypass != 0,
+        sat_char.Zone(),
+        sat_bypass.Zone() != 0,
     });
 
     mastering_dsp::SetOutput({
         ceiling.Value(), lim_rel.Value(), trim.Value(),
         mastering_dsp::kDitherLsb,
-        modes.lim_bypass != 0,
+        lim_bypass.Zone() != 0,
     });
 
     /* Modulation params are pushed unconditionally too, for the same reason
@@ -762,9 +974,9 @@ static void UpdateParams()
      * changes, so switching in reads as a deliberate new patch rather than
      * resuming whatever phase the previous mode left behind. */
     const mod_source::Mode mode =
-        static_cast<mod_source::Mode>(mod_mode_idx);
+        static_cast<mod_source::Mode>(mod_mode.Value());
     mod_engine.SetParams({mode, mod_a.Norm(), mod_b.Norm(),
-                          modes.mod_secondary[mod_mode_idx]});
+                          mod_sec.ValueFor(mode)});
 
     /* Gate the analysis followers on the mode that consumes them, so the
      * other five cost one predictable branch per sample instead of a band
@@ -774,39 +986,28 @@ static void UpdateParams()
                                mode == mod_source::Mode::Analysis);
 }
 
-/* ── Button LEDs ───────────────────────────────────────────────────────── */
+/* ── Button LEDs ─────────────────────────────────────────────────────────
+ * Six of the seven button paints are gone: a stateful VirtualButton carries
+ * its own per-zone colour array and ButtonBank paints it, so B2 on every
+ * page and B3 on the first three need nothing here.
+ *
+ * The Output page's B3 is the exception, and for the same reason it is a
+ * modal button rather than a stateful one — it has no zone of its own to
+ * colour. It wears the active modulation mode's colour instead: the same
+ * hue K5's arc and K3/K4's fills are showing, so one glance ties the three
+ * knobs and the button together. Off maps to kModOffColor, the dim "nothing
+ * to cycle here" the page used to show unconditionally.
+ *
+ * ControlLoop runs OnRender after the bank's own pass, so this overdraw
+ * always wins on the page it applies to and never fights it elsewhere. */
 static void RenderButtons(uint32_t t_ms)
 {
     (void)t_ms;
     if (settings.IsActive()) return;   // OnRender also fires in settings mode
 
-    const uint8_t page = pager.Page();
-
-    LedPanel::Rgb page_color;
-    bool          bypassed;
-    switch (page) {
-        case 0:  page_color = kPageAmber; bypassed = modes.eq_bypass;   break;
-        case 1:  page_color = kPageBlue;  bypassed = modes.comp_bypass; break;
-        case 2:  page_color = kPageGold;  bypassed = modes.sat_bypass;  break;
-        default: page_color = kPageRed;   bypassed = modes.lim_bypass;  break;
-    }
-    hw.leds.SetButtonPair(1, bypassed ? LedPanel::Scale(page_color, kBypassDim)
-                                      : page_color);
-
-    /* On the Output page B3 wears the active modulation mode's colour — the
-     * same hue K5's arc and K3/K4's fills are showing, so one glance ties the
-     * three knobs and the button together. Off maps to kModOffColor, the
-     * dim "nothing to cycle here" the page used to show unconditionally. */
-    LedPanel::Rgb mode_color;
-    switch (page) {
-        case 0:  mode_color = kQColors   [modes.mid_q_index];    break;
-        case 1:  mode_color = kCharColors[modes.comp_character]; break;
-        case 2:  mode_color = kSatColors [modes.sat_character];  break;
-        case 3:  mode_color = kModeColors[
-                     static_cast<uint8_t>(mod_mode.Value())];    break;
-        default: mode_color = kModeInert;                        break;
-    }
-    hw.leds.SetButtonPair(2, mode_color);
+    if (pager.Page() == 3)
+        hw.leds.SetButtonPair(
+            2, kModeColors[static_cast<uint8_t>(mod_mode.Value())]);
 
     /* B1 is left to Pager — it paints the active-page indicator itself. */
 }
@@ -874,10 +1075,24 @@ int main()
         .Jacks(kJacks)
         .Attach(lapis::kManual);
 
+    /* The bank's roster — which buttons persist, in what byte order — freezes
+     * at the first Presets walk, and it builds that roster by walking its
+     * pages. loop.Use(buttons) would supply them, but the loop is not wired
+     * until the end of main(), long after BootLoad(); attach the hardware and
+     * the pages explicitly here so the roster is complete before anything
+     * asks the bank how big it is. Declared order is byte order: B2 then B3,
+     * page by page. */
+    static IButton* const kButtonRefs[] = {
+        &hw.buttons[0], &hw.buttons[1], &hw.buttons[2]};
+    buttons.Attach(kButtonRefs, 3);
+    buttons.Pages(eq_page, comp_page, sat_page, out_page);
+    buttons.Global(page_button);   /* B1: descriptor metadata only */
+
     /* Preset payload — every Serializable surface gets walked on Save/Load. */
     presets.Manage(pager);
     presets.Manage(settings);
-    presets.Manage(modes);
+    presets.Manage(buttons);
+    presets.Manage(mod_sec);
     presets.Init();
     const bool restored = presets.BootLoad();
 
@@ -917,6 +1132,7 @@ int main()
      * If desired, you can unroll and modify. */
     loop.Use(pager)
         .Use(settings)
+        .Use(buttons)
         .Use(eq_page)
         .Use(comp_page)
         .Use(sat_page)

@@ -9,8 +9,11 @@
  * PagePalette: the primary arc color for Level rings (freq/ratio/etc.) and
  * the positive/negative/center colors for Bipolar rings (gain/trim/asym).
  * B3's per-page mode indicator (Q, compressor character, tape machine) is a
- * small fixed color array indexed by the current mode. The Output page has no
- * secondary mode and paints kModeInert instead.
+ * small fixed color array indexed by the current mode; those arrays and the
+ * B2 bypass pairs below are handed straight to VirtualButton::Colors(), so
+ * ButtonBank does the painting. The Output page's B3 is the one exception —
+ * it cycles a secondary selected by K5 rather than holding a zone of its
+ * own, so it stays a manual paint in kModeColors.
  */
 
 #pragma once
@@ -110,11 +113,6 @@ constexpr alchemy::LedPanel::Rgb kSatColors[3] = {
     {0xC0, 0x60, 0x00}, // Saturated - deep amber
 };
 
-/** Page 4's B3 used to have nothing to cycle. Dim white reads as "nothing here"
- *  rather than as an unlit LED, which would look like a fault. Still used for
- *  the Off modulation mode, where B3 genuinely has no secondary. */
-constexpr alchemy::LedPanel::Rgb kModeInert = {0x30, 0x30, 0x30};
-
 /* ── Page 4 — CV modulation source ───────────────────────────────────────
  * K6 selects the mode, K5 is that mode's continuous control, and B3 cycles
  * its discrete secondary.
@@ -157,3 +155,28 @@ constexpr alchemy::LedPanel::Rgb kModeColors[6] = {
 
 /** Dim factor applied to a page/button color when its stage is bypassed. */
 constexpr float kBypassDim = 0.15f;
+
+/* ── B2 bypass pairs ─────────────────────────────────────────────────────
+ * ButtonBank paints a stateful button from a static per-zone array, so the
+ * dim-the-page-colour rule that used to run in RenderButtons has to be a
+ * table instead. Dim() is LedPanel::Scale's arithmetic made constexpr —
+ * Scale is a runtime static, and these arrays have to exist at namespace
+ * scope for VirtualButton::Colors() to point at them.
+ *
+ * Zone 0 is engaged (full page colour), zone 1 is bypassed (dimmed), which
+ * is why the enum's default of 0 means "in circuit" on every page. */
+constexpr alchemy::LedPanel::Rgb Dim(alchemy::LedPanel::Rgb c, float k)
+{
+    return {static_cast<uint8_t>(static_cast<float>(c.r) * k + 0.5f),
+            static_cast<uint8_t>(static_cast<float>(c.g) * k + 0.5f),
+            static_cast<uint8_t>(static_cast<float>(c.b) * k + 0.5f)};
+}
+
+constexpr alchemy::LedPanel::Rgb kEqBypassColors[2] =
+    {kPageAmber, Dim(kPageAmber, kBypassDim)};
+constexpr alchemy::LedPanel::Rgb kCompBypassColors[2] =
+    {kPageBlue,  Dim(kPageBlue,  kBypassDim)};
+constexpr alchemy::LedPanel::Rgb kSatBypassColors[2] =
+    {kPageGold,  Dim(kPageGold,  kBypassDim)};
+constexpr alchemy::LedPanel::Rgb kLimBypassColors[2] =
+    {kPageRed,   Dim(kPageRed,   kBypassDim)};
