@@ -3,7 +3,7 @@
 An end-of-chain stereo mastering processor for the Hermetic Modular
 Alchemy Lab. Patch your mix in, get a louder, glued, ceiling-safe mix out.
 
-This guide describes firmware **v0.5.0**.
+This guide describes firmware **v0.1.0**.
 
 Everything is **stereo-linked**: there is one set of controls, and one gain
 is applied to both channels, so the image never shifts because one side got
@@ -122,8 +122,8 @@ All six draw as blue level arcs.
 **The Ratio knob is not linear in ratio.** It is linear in how much
 compression you are asking for, which puts the settings a mastering
 compressor actually lives at where your fingers are: 1.5:1 at a third of
-the way up, 2:1 at halfway, 3:1 at two thirds. 10:1 and 20:1 are crammed
-into the last tenth, which is the right place for them here.
+the way up, 2:1 at halfway, 3:1 at two thirds. 10:1 and 20:1 in the last 
+tenth.
 
 - **B2 tap** — bypass the compressor. The detector keeps tracking while
   bypassed, so gain reduction is already settled when you switch back in.
@@ -326,15 +326,8 @@ If you want loudness without more limiting, use makeup gain on the
 compressor page instead.
 
 **Dither** is fixed at 2 LSB and has no control. TPDF noise is added at the
-final quantisation point, where it is correct to add it, and the output is
+final quantisation point, and the output is
 rounded to the 24-bit grid rather than truncated onto it.
-
-There is nothing to set because there is nothing to hear. A 24-bit LSB is
-−138.5 dBFS, some 40 dB below the analog noise floor at the jacks, and
-whatever converter feeds this module has already put tens of LSBs of its
-own noise on the signal. Dither earns its keep when the end of the chain is
-a stored 24-bit file that may be processed again; the end of this chain is
-an analog voltage going into your rack.
 
 ---
 
@@ -628,10 +621,10 @@ always warm.
    or from a checkout of this repo with `make program-dfu`.
 
 Release files are named for their version —
-`lapis_philosophorum_v0.5.0.bin`. The module has no display, so it cannot
+`lapis_philosophorum_v0.x.0.bin`. The module has no display, so it cannot
 show you which firmware it is running; the version is stamped inside the
 image as well, so a file that has been renamed can still be identified
-with `strings lapis_philosophorum_v0.5.0.bin | grep Lapis`.
+with `strings lapis_philosophorum_v0.x.0.bin | grep Lapis`.
 
 **CV calibration** (unrelated to this firmware, but stored per-board):
 unpatch all CV jacks and hold **B1 + B2** while the board resets. The
@@ -644,7 +637,7 @@ survives reflashes.
 
 | | |
 |---|---|
-| Firmware version | 0.5.0 |
+| Firmware version | 0.1.0 |
 | Sample rate | 48 kHz |
 | Audio block size | 24 samples |
 | Converter word length | 24-bit |

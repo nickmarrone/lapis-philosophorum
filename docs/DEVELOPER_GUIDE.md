@@ -940,7 +940,7 @@ lib/libDaisy          → submodule, prebuilt once
 ```sh
 git clone --recurse-submodules <repo> && cd lapis-philosophorum
 make libdaisy          # once after cloning
-make                   # → build/lapis_philosophorum_v0.5.0.bin
+make                   # → build/lapis_philosophorum_v0.x.0.bin
 make program-dfu       # flash (module in DFU mode first)
 make clean
 ```
@@ -980,18 +980,18 @@ filenames are identical.
 
 ### Versioning
 
-`src/version.h` is the single source of truth, currently **0.5.0**:
+`src/version.h` is the single source of truth, currently **0.x.0**:
 
 ```c
 #define LAPIS_VERSION_MAJOR 0
 #define LAPIS_VERSION_MINOR 5
 #define LAPIS_VERSION_PATCH 0
-#define LAPIS_VERSION_STR   "0.5.0"
+#define LAPIS_VERSION_STR   "0.x.0"
 ```
 
 Nothing else defines a version. The Makefile *reads* the string back with
 a `sed` one-liner and folds it into `TARGET`, so the artifacts are named
-`build/lapis_philosophorum_v0.5.0.{bin,elf,hex,map}` — which is why
+`build/lapis_philosophorum_v0.x.0.{bin,elf,hex,map}` — which is why
 `LAPIS_VERSION_STR` has to stay on one line with its value in double
 quotes (the `sed` is deliberately strict, and an empty match is a hard
 `$(error)` rather than a binary named `..._v.bin`). Bumping the version
@@ -1012,7 +1012,7 @@ invalidates stored slots.
 a convention and the module has no display to report the version on:
 
 ```sh
-strings build/lapis_philosophorum_v0.5.0.bin | grep Lapis   # → LapisPhilosophorum 0.5.0
+strings build/lapis_philosophorum_v0.x.0.bin | grep Lapis   # → LapisPhilosophorum 0.x.0
 ```
 
 That works because of a two-part arrangement in `mastering.cpp`, and both

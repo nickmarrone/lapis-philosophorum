@@ -18,7 +18,7 @@ ifeq ($(VERSION),)
 $(error could not read LAPIS_VERSION_STR from src/version.h)
 endif
 
-# Artifacts carry the version: build/lapis_philosophorum_v0.5.0.{bin,elf,hex,map}.
+# Artifacts carry the version: build/lapis_philosophorum_v0.x.0.{bin,elf,hex,map}.
 # Bumping version.h therefore produces a differently-named .bin, and the old
 # one stays behind — `make clean` between releases if that bothers you.
 TARGET = lapis_philosophorum_v$(VERSION)

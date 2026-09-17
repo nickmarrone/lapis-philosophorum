@@ -1,18 +1,19 @@
 # Lapis Philosophorum
+## The Philospher's Stone
 
 A stereo-linked mastering-chain firmware for the [Hermetic Modular Alchemy
 Lab](https://hermeticmodular.com/modules/alchemy-lab) module, built on the
 [Alchemy SDK](https://github.com/hermetic-modular/alchemy-sdk).
 
 Signal path: In → 3-band EQ → Compressor → Tape Saturation → Output Trim →
-Limiter → Dither → Out, stereo-linked throughout — one set of controls
-and one gain applied to both channels, so they never drift apart. The
+Limiter → Dither → Out. Because the path is stereo-linked, only one set of 
+controls and one gain applies to both channels. The
 limiter's true-peak detector reads `max(|L|,|R|)` 4x oversampled; the compressor sums the two channels'
 power, the way a stereo-linked analogue compressor sums its detector
-currents. Four pages sharing six knobs:
+currents. There are four pages: 
 
 - **Page 1 — EQ (amber).** Low shelf, mid peak, and high shelf, each with
-  freq/gain; the mid band's Q cycles between three widths.
+  freq/gain. The mid band's Q cycles between three widths.
 - **Page 2 — Compressor (blue).** A log-domain feed-forward glue
   compressor: threshold, ratio, attack, release, makeup gain, and dry/wet
   mix, with three characters on B3 — Precise, crest-Adaptive, and an
@@ -28,17 +29,15 @@ currents. Four pages sharing six knobs:
   whole drive range — drive trades peaks for harmonics, not for level.
 - **Page 4 — Output (red).** Brickwall limiter (ceiling, release) on K1/K2
   and output trim on K6. K3, K4 and K5 drive the CV modulation source
-  below. TPDF dither is fixed at 2 LSB and has no control — see
-  `mastering_dsp::kDitherLsb` for why one was never doing audible work.
+  below. TPDF dither is fixed at 2 LSB and has no control.
 
 ## CV modulation source
 
-A stereo-linked chain has one parameter set and nothing worth
-CV-modulating, so the six CV jacks would otherwise sit idle. **K5** on the
-Output page turns them into a six-channel modulation source instead;
-**K3** and **K4** are the active mode's two continuous controls, and a
-**B3** tap cycles its discrete secondary. K5's ring morphs between the mode
-colours as you sweep, and K3, K4 and B3 all wear the active mode's colour.
+An end of chain mastering tool has little use for CV automation. Instead,
+the six CV jacks are used as an extra modulation source for your rack.
+On page 4 (red), **K5** selects your modulation type,
+**K3** and **K4** are the active mode's two continuous controls, and
+**B3** cycles through a modulation mode for the type. 
 
 K3 is the mode's primary axis — how much, how fast, how spread — and K4 is
 its character. Analysis is the one exception: it generates nothing, so it
@@ -53,19 +52,18 @@ has no character to shape and spends K4 on sensitivity instead.
 | 4 | **Smooth Random** | 6 out | Divergence, one walk → six | Smooth → stepped | Rate: glacial / slow / medium / quick |
 | 5 | **Euclid** | J3 clock in, 5 gate out | Density | Gate length, trigger → legato | Step set: tight / compact / classic / odd / long |
 
-**The shape bank** is shared by Clocked and Multi LFO: six waveforms in a
-ring — sine, triangle, ramp up, ramp down, pulse, stepped random —
-crossfading between neighbours and wrapping, so the knob has no seam and no
-dead end. Clocked spreads its four outputs across the ring at a settable
-gap; at zero spread they collapse onto one shape and the four jacks carry
-identical voltages, which is the mono-bus case. Multi LFO puts all six at
-one position, since its outputs are already differentiated by rate.
 
-**Analysis** is the one that belongs to this module rather than to any
-utility: the mastering chain becomes its own modulation source. J3–J5 carry
+**Analysis** The mastering chain becomes its own modulation source. J3–J5 carry
 low/mid/high band envelopes, J6 the broadband level, and J7/J8 the
 compressor's and limiter's gain reduction — so a patch can follow what the
 chain is actually doing to the program material.
+
+**The shape bank** is shared by Clocked and Multi LFO: six waveforms in a
+ring — sine, triangle, ramp up, ramp down, pulse, stepped random —
+crossfading between neighbours and wrapping. Clocked spreads its four outputs across the ring at a settable
+gap; at zero spread they collapse onto one shape and the four jacks carry
+identical voltages. Multi LFO puts all six at
+one position, since its outputs are already differentiated by rate.
 
 **Clocked** puts four shape-bank positions on J5–J8, locked to the incoming
 clock and reset together. With nothing patched to the clock jack it
@@ -90,28 +88,16 @@ the current page's mode (EQ: mid-Q 0.707 / 1.5 / 4.0; compressor: Precise
 / Adaptive / Glue; tape: 30 ips / 15 ips / Saturated; output: the active
 modulation mode's secondary). **B2+B3** held for 2 s enters the SDK's
 settings mode, same as the template. Presets and settings are kept from the
-template; **param lock and CV routing have been removed** — every knob is a
-direct, unlatched control.
-
-Total latency is 75 samples (1.56 ms) — 60 for the limiter's lookahead, 15
-for the tape stage's half-band filters — and is constant regardless of
-bypass state.
+template.
 
 The project packages the Alchemy SDK and libDaisy as git submodules and
 builds with the standard Daisy `make` workflow.
 
 ## Documentation
 
-The module also carries its own manual. Every knob, page, and jack has help
-text compiled into the firmware, alongside long-form sections on the signal
-path, the panel controls, the modulation source, and gain staging — so a
-module plugged into the [web
-programmer](https://hermeticmodular.com/program) explains itself, with no
-manual to go and find. The prose lives next to the declarations it describes
-([`src/mastering.cpp`](src/mastering.cpp)) and in
-[`src/manual.cpp`](src/manual.cpp) for the parts that belong to no single
-control. None of it reaches a preset's schema hash, so editing it can never
-invalidate a saved preset.
+The module also carries its own manual that can be viewed by plugging the
+module into the [web
+programmer](https://hermeticmodular.com/program).
 
 - **[User Guide](docs/USER_GUIDE.md)** — how to play the module: the
   signal path, every knob's range and curve, what the LEDs mean, presets,
@@ -120,30 +106,6 @@ invalidate a saved preset.
   built: the control/DSP split, each stage's implementation, the preset
   schema, the build system, recipes for extending it, and the invariants
   that will bite quietly if broken.
-
-## What's inside
-
-```
-├── Makefile              standard Daisy Makefile (libDaisy core underneath)
-├── src/                  the firmware — this is the part you edit
-│   ├── mastering.cpp         hardware wiring, pages, knobs, buttons, LEDs, presets
-│   ├── manual.*              the in-firmware manual's long-form sections
-│   ├── mastering_dsp.*       chain orchestration + audio callback
-│   ├── dsp_common.h          shared constants and helpers
-│   ├── dsp_biquad.h          matched-magnitude biquads + coefficient inversion
-│   ├── dsp_compressor.h      log-domain bus compressor
-│   ├── dsp_limiter.h         brickwall limiter (instant attack, exponential release)
-│   ├── dsp_saturation.h      tape saturation: emphasis pair, ADAA tanh, head bump
-│   ├── dsp_halfband.h        2x polyphase half-band up/downsamplers + matched dry delay
-│   ├── dsp_dither.h          xorshift32 TPDF dither
-│   ├── mastering_palette.h   LED color palettes
-│   └── version.h             firmware version — single source of truth
-├── tools/
-│   └── halfband_design.py    regenerates the half-band tap table
-└── lib/
-    ├── alchemy-sdk/     Alchemy framework + board support   (submodule)
-    └── libDaisy/        Electrosmith Daisy library           (submodule)
-```
 
 ## Requirements
 
@@ -173,7 +135,7 @@ git clone --recurse-submodules <this-repo> lapis-philosophorum
 cd lapis-philosophorum
 
 make libdaisy    # build libDaisy once after cloning
-make             # build the firmware → build/lapis_philosophorum_v0.5.0.bin
+make             # build the firmware → build/lapis_philosophorum_v0.x.0.bin
 ```
 
 The version comes from [`src/version.h`](src/version.h) and lands in two
@@ -181,7 +143,7 @@ places: the artifact name, and the image itself. So even a `.bin` that has
 been renamed can be identified:
 
 ```sh
-strings build/lapis_philosophorum_v0.5.0.bin | grep Lapis   # → LapisPhilosophorum 0.5.0
+strings build/lapis_philosophorum_v0.1.0.bin | grep Lapis   # → LapisPhilosophorum 0.1.0
 ```
 
 `BOARD=v2` is the default; pass `make BOARD=v1` for an original dev board.
@@ -211,41 +173,6 @@ make program-dfu
 ```
 
 You can also use the [Hermetic Modular Web Programmer](https://hermeticmodular.com/program) straight from the browser.
-
-## Make it yours
-
-The [Developer Guide](docs/DEVELOPER_GUIDE.md) covers the architecture and
-has step-by-step recipes for adding a knob, adding a DSP stage, adding a
-page, and extending the preset payload. The short version:
-
-1. **The control/DSP seam** is the four parameter structs in
-   [`src/mastering_dsp.h`](src/mastering_dsp.h). The DSP layer knows
-   nothing about the SDK; the control layer pushes engineering units
-   (Hz, dB, ms) into it once per frame.
-2. **Rename the firmware** — change `TARGET` at the top of the
-   [`Makefile`](Makefile) (this names the `.bin`), and rename the `src/`
-   files to taste, updating `CPP_SOURCES` to match.
-   [`src/version.h`](src/version.h) carries the version that names the
-   `.bin` and is stamped into the image; bump it there and nowhere else.
-3. **Add source files** — append them to `CPP_SOURCES` in the Makefile.
-   One caveat from the underlying Daisy build: object files are flattened
-   into `build/` by basename, so two sources can't share a filename even in
-   different directories.
-4. **Learn the SDK** — the framework headers live in
-   `lib/alchemy-sdk/framework/include/alchemy/`, and the SDK's
-   [`examples/`](https://github.com/hermetic-modular/alchemy-sdk/tree/main/examples)
-   show other usage styles (the `kick` example is a minimal-opt-in
-   contrast to this project).
-
-### Updating the vendored libraries
-
-```sh
-git -C lib/alchemy-sdk pull origin main
-git add lib/alchemy-sdk && git commit -m "Bump alchemy-sdk"
-```
-
-The pinned libDaisy commit matches the one the Alchemy SDK itself vendors
-and tests against; if you bump one, consider bumping the other to match.
 
 
 ## License
